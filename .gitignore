@@ -1,9 +1,16 @@
 node_modules/
 dist/
 .env
+.env.*
 *.log
 .DS_Store
 tmp/
 tmp/**/*
 .hermes-tmp.*
 *.swp
+*.swo
+*~
+.vscode/
+.idea/
+coverage/
+.nyc_output/

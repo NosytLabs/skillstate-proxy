@@ -1,7 +1,7 @@
 {
   "name": "skillstate-proxy",
   "version": "0.1.0",
-  "description": "OpenAI-compatible proxy that enforces SKILL.state runtime discipline (arXiv:2608.26263) — bounded O(1) prompts, O(T) tokens, reasoning discarded after each step. Drop-in front of any OpenAI-compatible upstream (tokenrouter, openrouter, opencode, hermes).",
+  "description": "OpenAI-compatible proxy enforcing SKILL.state (arXiv:2608.26263) — bounded O(1) prompts, O(T) total tokens for long-horizon LLM agents. Drop-in front of Venice, OpenAI, Anthropic, OpenRouter, or any compatible upstream.",
   "type": "module",
   "license": "MIT",
   "bin": {

@@ -87,7 +87,7 @@ npm install && npm run build
 
 # 2. start (point at any OpenAI-compatible endpoint)
 SKILLSTATE_UPSTREAM=https://api.venice.ai/api/v1 \
-SKILLSTATE_API_KEY=$VENICE_INFERENCE_KEY \
+SKILLSTATE_API_KEY=your-venice-key \
 SKILLSTATE_MODEL=qwen3-5-9b \
 SKILLSTATE_SCHEMA=step,notes,flags \
 SKILLSTATE_INITIAL_STATE='{"step":0,"notes":[],"flags":[]}' \
@@ -118,15 +118,15 @@ Send `x-skillstate-session: <id>` on the next call to continue that conversation
 
 ## Setup
 
-### CLI flags
+### Environment variables (quickest)
 
 ```bash
-skillstate-proxy \
-  --port 8789 \
-  --upstream venice:https://api.venice.ai/api/v1 \
-  --state-dir ~/.skillstate/state \
-  --schema step,notes,flags \
-  --initial-state '{"step":0}'
+SKILLSTATE_UPSTREAM=https://api.venice.ai/api/v1 \
+SKILLSTATE_API_KEY=your-key \
+SKILLSTATE_MODEL=qwen3-5-9b \
+SKILLSTATE_SCHEMA=step,notes,flags \
+SKILLSTATE_INITIAL_STATE='{"step":0,"notes":[],"flags":[]}' \
+npx skillstate
 ```
 
 ### Config file (`skillstate.json`)
@@ -277,18 +277,18 @@ npm test
 
 # live integration test (needs API key)
 SKILLSTATE_LIVE=1 \
-SKILLSTATE_API_KEY=$VENICE_INFERENCE_KEY \
+SKILLSTATE_API_KEY=your-venice-key \
 SKILLSTATE_UPSTREAM=https://api.venice.ai/api/v1 \
 SKILLSTATE_MODEL=qwen3-5-9b \
   npm test -- test/live.test.ts
 
 # quick baseline-vs-SKILL.state benchmark
-SKILLSTATE_API_KEY=$VENICE_INFERENCE_KEY \
+SKILLSTATE_API_KEY=your-venice-key \
 SKILLSTATE_MODEL=qwen3-5-9b \
   npx tsx test/benchmark.ts 10
 
 # 50-step Venice real-cost benchmark
-SKILLSTATE_API_KEY=$VENICE_INFERENCE_KEY \
+SKILLSTATE_API_KEY=your-venice-key \
 npx tsx test/benchmark-venice.ts 50
 ```
 
