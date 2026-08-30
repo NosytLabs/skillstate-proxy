@@ -124,23 +124,35 @@ The model outputs a fenced JSON block containing `state_patch` (delta Σ) and `a
 compression/truncation baseline catastrophically fails. The *structure* of Σ
 is the active ingredient.
 
-### 5.5 Noise robustness (Warehouse T=50)
+### 5.5 Noise robustness (Warehouse T=50, Gemini-3-Flash)
 
-| Distractors/turn | Baseline | SKILL.state |
-|------------------|---------:|------------:|
-| 5                | 0.68     | **1.00**    |
-| 20               | 0.61     | **0.97**    |
-| 50               | 0.53     | **0.98**    |
+| Distractors/turn | Prompt (ReAct) | SKILL.state |
+|------------------|---------------:|------------:|
+| 5                | 0.68           | **1.00**    |
+| 20               | 0.61           | **0.97**    |
+| 50               | 0.53           | **0.98**    |
 
 ### 5.6 State recovery (Experiment 3)
 
-When the true environment changes behind the agent's back (Force Push,
-Flaky CI Test, etc.):
-- Baseline runtimes hallucinate for **5–12 consecutive turns** before noticing.
+When the true environment changes behind the agent's back (Secret Audit,
+Secret Barcode, Secret Move scenarios):
+- Baseline runtimes hallucinate for **5–8 consecutive turns** before noticing.
 - **SKILL.state: 0 recovery steps.** The corrective observation updates Σ
   immediately because there is no stale history to fight it.
 
-### 5.7 Open-weight error taxonomy (§5.7)
+### 5.7 Public interactive benchmarks (Experiment 4, Gemini-3-Flash)
+
+| Runtime | InterCode CTF pass@1 | tokens | τ-Bench Retail | tokens | τ-Bench Airline | tokens |
+|---|---:|---:|---:|---:|---:|---:|
+| Prompt (ReAct) | 43.2% | 977k | 48.2% | 4.48M | 21.8% | 4.85M |
+| Memory (Summary) | 46.4% | 1.03M | 29.9% | 4.24M | 23.6% | 4.65M |
+| Stateful (LangGraph) | 41.8% | 1.13M | 51.7% | 3.92M | 28.1% | 5.28M |
+| **SKILL.state** | **54.2%** | **387k** | **58.3%** | **3.47M** | **32.4%** | **2.88M** |
+
+In τ-Bench Airline, baseline prompts peak above 11,000 tokens/step (dense DB
+responses); SKILL.state stays flat at ~2,800 tokens/step.
+
+### 5.8 Open-weight error taxonomy (§5.7)
 
 Small models (Gemma-4-31B at T=100, score 0.42) fail in three predictable ways:
 1. **Premature overwrite / deletion** (68%) — emit a state_patch that replaces
@@ -156,10 +168,22 @@ mitigated by (a) rollback-retry on missing/invalid `state_patch`, and
 
 ## 6. Limitations (§7)
 
-- No fixed schema known in advance → weaker.
-- Relies on the model reliably emitting structured JSON.
-- Single-agent; no native multi-agent state composition.
-- Schema authoring is manual; learned schemas are future work.
+The paper identifies three settings where the sufficient-statistic assumption fails:
+
+1. **No fixed schema known in advance** — relevant state structure must be
+   discovered dynamically during execution.
+2. **Deferred-relevance observations** — a correct state update depends on an
+   earlier observation whose relevance wasn't recognized when first observed,
+   so it was never committed to state.
+3. **Trajectory-defined objectives** — auditing, debugging provenance, or
+   explaining past actions, where the history itself is the target output.
+
+Additionally: single-agent only (multi-agent needs deterministic conflict
+resolution in ⊕ for concurrent writes); relies on the model proposing valid
+state patches (malformed outputs trigger rollback-retry, not corruption —
+schema ownership and validation live in the runtime); small open-weight models
+are format-error-prone (grammar-constrained decoding is future work); schema
+authoring is manual (learned schemas are future work).
 
 ## 7. Implementation checklist (for a faithful proxy)
 

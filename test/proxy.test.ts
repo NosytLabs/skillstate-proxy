@@ -189,6 +189,49 @@ describe("proxy: end-to-end with mock upstream", () => {
     expect(r.headers.get("x-skillstate-action")).toBe("do");
   });
 
+  it("exposes session state via /state and resets via DELETE", async () => {
+    const sid = "test-state-endpoint";
+    mockCalls = []; // mock derives state values from the global call counter — reset it
+    // create the session with one chat call
+    const r0 = await fetch(`http://127.0.0.1:${proxyPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer test", "x-skillstate-session": sid },
+      body: JSON.stringify({
+        model: "test-model", stream: false,
+        messages: [{ role: "system", content: "TASK: state endpoint" }, { role: "user", content: "go" }],
+      }),
+    });
+    expect(r0.status).toBe(200);
+
+    // inspect
+    const g = await fetch(`http://127.0.0.1:${proxyPort}/state?session=${sid}`);
+    expect(g.status).toBe(200);
+    const j = await g.json();
+    expect(j.session).toBe(sid);
+    expect(j.step).toBe(1);
+    expect(j.state).toHaveProperty("step", 1);
+
+    // list sessions
+    const ls = await fetch(`http://127.0.0.1:${proxyPort}/state`);
+    const lsj = await ls.json();
+    expect(Array.isArray(lsj.sessions)).toBe(true);
+    expect(lsj.sessions).toContain(sid);
+
+    // 404 for unknown session
+    const nf = await fetch(`http://127.0.0.1:${proxyPort}/state?session=nope`);
+    expect(nf.status).toBe(404);
+
+    // 400 for path-traversal attempt
+    const bad = await fetch(`http://127.0.0.1:${proxyPort}/state?session=..%2F..%2Fetc`);
+    expect(bad.status).toBe(400);
+
+    // reset
+    const d = await fetch(`http://127.0.0.1:${proxyPort}/state?session=${sid}`, { method: "DELETE" });
+    expect(d.status).toBe(204);
+    const nf2 = await fetch(`http://127.0.0.1:${proxyPort}/state?session=${sid}`);
+    expect(nf2.status).toBe(404);
+  });
+
   it("accepts Anthropic /v1/messages and returns Anthropic shape", async () => {
     mockCalls = [];
     const sid = "test-anthropic";

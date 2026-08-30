@@ -4,7 +4,7 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2608.26263-b31b1b.svg)](https://arxiv.org/abs/2608.26263)
 [![EMNLP 2026](https://img.shields.io/badge/EMNLP-2026-2c7be5.svg)](https://arxiv.org/abs/2608.26263)
-[![Tests](https://img.shields.io/badge/tests-24%2F24%20passing-brightgreen.svg)](#tests)
+[![Tests](https://img.shields.io/badge/tests-25%2F25%20passing-brightgreen.svg)](#tests)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
 
@@ -50,18 +50,18 @@ Most AIs work by writing down **everything** that ever happened — every step, 
 
 ## Real benchmark (Venice API · qwen3-5-9b · 50 steps)
 
-Actual measured runs through this proxy vs. a plain append-only transcript. Costs are Venice's real reported per-request USD.
+Actual measured runs through this proxy vs. a plain append-only transcript. Costs are Venice's real reported per-request USD (run 2026-08-30).
 
 | | Baseline | SKILL.state | Savings |
 |---|---:|---:|---:|
-| Prompt tokens (50 steps) | 229,534 | 74,210 | **67.7% less** |
-| Real cost | $0.0246 | $0.0095 | $0.0152 (62%) |
-| Tokens at step 50 | 8,377 | 1,551 | **5.4x less** |
-| Tokens at step 20 | 3,642 | 1,419 | 2.6x less |
+| Prompt tokens (50 steps) | 274,540 | 75,606 | **72.5% less** |
+| Real cost | $0.0292 | $0.0097 | $0.0195 (67%) |
+| Tokens at step 50 | 9,746 | 1,606 | **6.1x less** |
+| Tokens at step 20 | 4,636 | 1,439 | 3.2x less |
 
 The baseline prompt grows linearly every step; SKILL.state stays ~1,500 tokens/step **no matter how long the task runs**. At 200+ steps the gap is 20x or more (see [paper results](#paper-benchmarks)).
 
-At GPT-4o rates the same 50-step workload would cost **$0.69 baseline vs $0.32 with SKILL.state**.
+At GPT-4o rates the same 50-step workload would cost **$0.81 baseline vs $0.33 with SKILL.state**.
 
 Run it yourself on any provider:
 
@@ -75,11 +75,11 @@ SKILLSTATE_API_KEY=your-key npx tsx test/benchmark.ts 50
 
 | | Without SKILL.state | With SKILL.state |
 |---|---|---|
-| **Prompt at step 50** | ~8,400 tokens (growing) | ~1,500 tokens (constant) |
-| **Total tokens (50 steps)** | ~230k | ~74k (**68% less**) |
+| **Prompt at step 50** | ~9,700 tokens (growing) | ~1,500 tokens (constant) |
+| **Total tokens (50 steps)** | ~275k | ~76k (**72% less**) |
 | **Accuracy at T=200** | 0.74 | **0.94** |
-| **State recovery after crash** | 5-12 turns hallucinating | **0 steps** (Σ on disk) |
-| **Noise robustness** | Degrades to 0.53 | Stays **0.98** |
+| **State recovery after environment drift** | 5-8 turns hallucinating | **0 steps** (Σ on disk) |
+| **Noise robustness (50 distractors/turn)** | Degrades to 0.53 | Stays **0.98** |
 
 The longer your agent runs, the more you save. At 500 steps: ~750k tokens vs ~13M baseline — a **17x reduction**.
 
@@ -116,6 +116,16 @@ curl http://127.0.0.1:8789/v1/chat/completions \
 ```
 
 Responses include SKILL.state headers (`x-skillstate-session`, `x-skillstate-step`, `x-skillstate-cost-usd`). Send the session header back to continue a conversation. Without the header, the proxy derives a deterministic session from (system prompt + model), so even zero-config clients get state continuity.
+
+### Inspect & manage state
+
+```bash
+curl http://127.0.0.1:8789/state                          # list sessions
+curl http://127.0.0.1:8789/state?session=<sid>            # view Σ for one session
+curl -X DELETE http://127.0.0.1:8789/state?session=<sid>  # reset a session
+curl http://127.0.0.1:8789/cost                           # 24h spend summary
+curl http://127.0.0.1:8789/health                         # upstream circuit status
+```
 
 ---
 
@@ -252,13 +262,35 @@ From [SKILL.state: Scalable Long-Horizon Agent Skills](https://arxiv.org/abs/260
 | Stateful | 41.8% | 1.13M |
 | **SKILL.state** | **54.2%** | **387k** |
 
+### Sierra τ-Bench (customer service, Gemini-3-Flash)
+
+| Runtime | Retail pass | tokens | Airline pass | tokens |
+|---|---:|---:|---:|---:|
+| ReAct | 48.2% | 4.48M | 21.8% | 4.85M |
+| Memory (Summary) | 29.9% | 4.24M | 23.6% | 4.65M |
+| Stateful (LangGraph) | 51.7% | 3.92M | 28.1% | 5.28M |
+| **SKILL.state** | **58.3%** | **3.47M** | **32.4%** | **2.88M** |
+
+On τ-Bench Airline, baseline prompts peak above 11,000 tokens/step on dense database responses — SKILL.state stays flat at ~2,800.
+
 ### Noise robustness (Warehouse T=50)
 
 | Distractors/turn | Baseline | SKILL.state |
-|---|---:|---:|
+|---:|---:|---:|
 | 5 | 0.68 | **1.00** |
 | 20 | 0.61 | **0.97** |
 | 50 | 0.53 | **0.98** |
+
+### When *not* to use it (paper §7)
+
+The paper is explicit about where the approach loses:
+
+- **No fixed schema in advance** — if the state structure must be discovered during execution, structured state is weaker than a transcript.
+- **Deferred-relevance observations** — if a step depends on something observed earlier whose importance wasn't recognized at the time (and thus never committed to Σ), it's gone.
+- **Trajectory-defined objectives** — auditing, provenance, "explain what you did" tasks where the history *is* the output.
+- **Small models + JSON** — weak models fail on output format, not reasoning (68% of failures are overwrite-instead-of-merge, 20% type confusion, 12% syntax). The proxy's rollback-retry and schema enforcement mitigate this, but constrained decoding is the paper's recommended fix.
+
+Single-agent only — multi-agent would need deterministic conflict resolution in the merge operator for concurrent writes.
 
 ---
 
@@ -270,10 +302,13 @@ From [SKILL.state: Scalable Long-Horizon Agent Skills](https://arxiv.org/abs/260
 | **Anthropic** | claude-sonnet-4.5, claude-opus-4.5 | $3-$15/1M |
 | **Venice** | qwen3-5-9b, kimi-k3, llama variants | $0.10-$0.30/1M |
 | **OpenRouter** | 100+ models | varies |
-| **Gonka** | decentralized GPU network | ~$0.005/1M |
 | **Local** | vLLM, Ollama, llama.cpp | free |
 
 Works with **any** OpenAI-compatible endpoint — just set `SKILLSTATE_UPSTREAM`. No code changes in your client.
+
+### Gonka — decentralized AI compute
+
+[Gonka](https://gonka.ai) is a decentralized GPU network: instead of one company's datacenter, inference runs on a global network of hosts, settled in GNK token (~$0.12). That already makes per-token pricing extremely low (~0.01 GNK per 1M tokens — a few cents per *million* tokens). Pair it with SKILL.state and the two savings compound: Gonka cuts the price per token, SKILL.state cuts the *number* of tokens. Set `SKILLSTATE_UPSTREAM` to your Gonka gateway endpoint and optionally `"currency": "gnk"` per upstream in the config to track spend in GNK alongside USD.
 
 ---
 
@@ -284,7 +319,7 @@ src/
   state.ts            SKILL.state core (merge, extract, validate, prompt template)
   proxy.ts            HTTP proxy: rewrite → upstream → extract ΔΣ → merge Σ → respond
   anthropic.ts        Anthropic ↔ OpenAI wire translator
-  pricing.ts          USD pricing table for cost projection
+  pricing.ts          USD/GNK pricing table for cost projection
   cost-ledger.ts      JSONL spend ledger
   circuit-breaker.ts  Per-upstream circuit breaker (configurable)
   rate-limiter.ts     Per-upstream rate limiter
@@ -293,7 +328,7 @@ src/
   index.ts            Public API barrel
 test/
   state.test.ts       18 unit tests (merge, extraction, validation, prompt)
-  proxy.test.ts       4 integration tests (in-process mock upstream)
+  proxy.test.ts       5 integration tests (in-process mock upstream)
   live.test.ts        Live 3-step loop (SKILLSTATE_LIVE=1 + key)
   anthropic.test.ts   Live /v1/messages translation (SKILLSTATE_LIVE=1 + key)
   benchmark.ts        SKILL.state vs baseline benchmark (any provider)
@@ -306,11 +341,11 @@ references/
 ## Tests
 
 ```bash
-npm test                              # 22 offline tests (no network)
-SKILLSTATE_LIVE=1 SKILLSTATE_API_KEY=... npm test   # + live provider tests (24 total)
+npm test                              # 23 offline tests (no network)
+SKILLSTATE_LIVE=1 SKILLSTATE_API_KEY=... npm test   # + live provider tests (25 total)
 ```
 
-All 24 tests pass — including live 3-step state-accumulation and Anthropic-translation runs against a real provider (Venice, qwen3-5-9b).
+Offline tests need no API key. Live tests run only with `SKILLSTATE_LIVE=1` and a real key — verified against Venice (qwen3-5-9b).
 
 ---
 

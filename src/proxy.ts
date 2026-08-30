@@ -9,7 +9,7 @@
 
 import { createServer, IncomingMessage, Server } from "node:http";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { newSession, buildStepPrompt, extractDelta, applyDelta, type StateSession } from "./state.js";
 import { estimateTokens, extractUsage } from "./token-estimate.js";
@@ -69,7 +69,13 @@ export const DEFAULT_CONFIG: ProxyConfig = {
 const sessions = new Map<string, { session: StateSession; lastAccess: number }>();
 
 function sessionFile(stateDir: string, id: string): string {
+  // id is validated by safeSessionId() before it ever reaches here
   return join(stateDir, `${id}.json`);
+}
+
+/** Session IDs must be filesystem-safe: alphanumerics, dash, underscore, 1-128 chars. */
+function safeSessionId(id: string): string | null {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : null;
 }
 
 function loadSession(stateDir: string, id: string, ttlMs: number): StateSession | null {
@@ -112,7 +118,7 @@ function gcSessions(ttlMs: number): void {
 
 function getSessionId(req: IncomingMessage, body: any): string {
   const hdr = req.headers["x-skillstate-session"];
-  if (typeof hdr === "string" && hdr.length) return hdr;
+  if (typeof hdr === "string" && safeSessionId(hdr)) return hdr;
   const sys = body?.messages?.find((m: any) => m.role === "system")?.content ?? body?.system ?? "";
   const model = body?.model ?? "";
   return createHash("sha256").update(String(sys) + "::" + model).digest("hex").slice(0, 24);
@@ -310,6 +316,39 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
         return;
       }
 
+      // ── /state — inspect/reset a session's Σ (query: ?session=<sid>) ──
+      if (req.url?.startsWith("/state") || req.url?.startsWith("/v1/state")) {
+        const sidParam = new URL(req.url, "http://x").searchParams.get("session");
+        const safeSid = sidParam ? safeSessionId(sidParam) : null;
+        if (req.method === "GET") {
+          if (!sidParam) {
+            res.statusCode = 200;
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify({ sessions: [...sessions.keys()] }));
+            return;
+          }
+          if (!safeSid) { res.statusCode = 400; res.end(JSON.stringify({ error: "invalid session id" })); return; }
+          const s = loadSession(config.stateDir, safeSid, sessionTtl);
+          if (!s) { res.statusCode = 404; res.end(JSON.stringify({ error: "session not found" })); return; }
+          res.statusCode = 200;
+          res.setHeader("content-type", "application/json");
+          res.end(JSON.stringify({ session: safeSid, step: s.step, schema: s.schema, state: s.state }));
+          return;
+        }
+        if (req.method === "DELETE") {
+          if (!sidParam) { res.statusCode = 400; res.end(JSON.stringify({ error: "missing ?session=" })); return; }
+          if (!safeSid) { res.statusCode = 400; res.end(JSON.stringify({ error: "invalid session id" })); return; }
+          sessions.delete(safeSid);
+          try {
+            const f = sessionFile(config.stateDir, safeSid);
+            if (existsSync(f)) unlinkSync(f);
+          } catch { /* best effort */ }
+          res.statusCode = 204;
+          res.end();
+          return;
+        }
+      }
+
       // ── /cost ──
       if (req.url?.startsWith("/cost") || req.url?.startsWith("/v1/cost")) {
         const s = ledger.summarize();
@@ -324,7 +363,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
         res.statusCode = 404;
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({
-          error: "skillstate-proxy serves /v1/chat/completions, /v1/messages, /v1/models, /health, /cost",
+          error: "skillstate-proxy serves /v1/chat/completions, /v1/messages, /v1/models, /health, /cost, /state",
         }));
         return;
       }
