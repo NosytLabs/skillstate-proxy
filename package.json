@@ -1,0 +1,35 @@
+{
+  "name": "skillstate-proxy",
+  "version": "0.1.0",
+  "description": "OpenAI-compatible proxy that enforces SKILL.state runtime discipline (arXiv:2608.26263) — bounded O(1) prompts, O(T) tokens, reasoning discarded after each step. Drop-in front of any OpenAI-compatible upstream (tokenrouter, openrouter, opencode, hermes).",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "skillstate": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "llm",
+    "agent",
+    "skillstate",
+    "arxiv",
+    "context-management",
+    "proxy",
+    "openai-compatible",
+    "long-horizon",
+    "token-savings"
+  ],
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
