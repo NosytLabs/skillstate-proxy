@@ -1,8 +1,7 @@
 /**
  * Model-agnostic translator: Anthropic /v1/messages <-> OpenAI /v1/chat/completions
  * Lets skillstate-proxy sit in front of Claude, OpenAI, or any OpenAI-compatible upstream
- * without the client needing to know. Inspired by headroom's OpenAI-compat passthrough
- * but extended for Anthropic wire format.
+ * without the client needing to know.
  */
 
 export type NormalizedRequest = {

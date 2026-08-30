@@ -1,6 +1,6 @@
 /**
  * Bundled pricing — USD per 1M tokens.
- * Extends headroom pricing with Gonka (decentralized, GNK-settled) + skillstate benchmarks.
+ * Covers local, Gonka (decentralized, GNK-settled), Venice, OpenRouter, OpenAI, Anthropic.
  *
  * Sources:
  *  - openrouter.ai / provider pricing pages (2026-06-17)
@@ -44,7 +44,7 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   "claude-sonnet-4.5": { input: 3.0, output: 15.0, source: "venice.ai (via openai compat)", asOf: "2026-08-29" },
 
   // ── TokenRouter (aggregator — free tier used in benchmarks) ───────
-  "z-ai/glm-5.3-free": { input: 0, output: 0, source: "tokenrouter free tier", asOf: "2026-08-29" },
+  "z-ai/glm-5.3-free": { input: 0, output: 0, source: "free tier", asOf: "2026-08-29" },
 
   // ── Hosted (OpenRouter / direct) ──────────────────────────────────
   "openai/gpt-5.4": { input: 5.0, output: 25.0, source: "openrouter.ai", asOf: "2026-06-17" },
