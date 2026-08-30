@@ -43,7 +43,7 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   "claude-opus-4.5": { input: 15.0, output: 75.0, source: "venice.ai (via openai compat)", asOf: "2026-08-29" },
   "claude-sonnet-4.5": { input: 3.0, output: 15.0, source: "venice.ai (via openai compat)", asOf: "2026-08-29" },
 
-  // ── TokenRouter (aggregator — free tier used in benchmarks) ───────
+  // ── Free tier (aggregator) ─────────────────────────────────────────
   "z-ai/glm-5.3-free": { input: 0, output: 0, source: "free tier", asOf: "2026-08-29" },
 
   // ── Hosted (OpenRouter / direct) ──────────────────────────────────

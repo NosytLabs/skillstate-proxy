@@ -129,7 +129,7 @@ describe("proxy: end-to-end with mock upstream", () => {
       const msgs = c.body.messages;
       expect(msgs.length).toBe(2);
       expect(msgs[0].role).toBe("system");
-      expect(msgs[0].content).toContain("EXECUTION STATE");
+      expect(msgs[0].content).toContain("Skill Execution State");
       expect(msgs[1].role).toBe("user");
     }
     // State file persists and step == 3

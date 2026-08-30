@@ -1,13 +1,29 @@
 {
   "name": "skillstate-proxy",
   "version": "0.1.0",
-  "description": "LLM agent token savings proxy — drops prompt tokens 60%+ on long-horizon tasks via SKILL.state (arXiv:2608.26263). OpenAI-compatible, works with any upstream.",
+  "description": "Drop-in token-savings proxy for long-horizon LLM agents. Cuts prompt tokens 60-95% via SKILL.state structured state (arXiv:2608.26263, EMNLP 2026). Model-agnostic: works with OpenAI, Anthropic, Venice, OpenRouter, vLLM, Ollama, any OpenAI-compatible upstream.",
   "type": "module",
   "license": "MIT",
   "bin": {
     "skillstate": "./dist/cli.js"
   },
   "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./state": "./dist/state.js",
+    "./proxy": "./dist/proxy.js",
+    "./anthropic": "./dist/anthropic.js",
+    "./pricing": "./dist/pricing.js",
+    "./cost-ledger": "./dist/cost-ledger.js",
+    "./circuit-breaker": "./dist/circuit-breaker.js",
+    "./rate-limiter": "./dist/rate-limiter.js",
+    "./token-estimate": "./dist/token-estimate.js"
+  },
+  "files": [
+    "dist/**",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/cli.js",
@@ -19,15 +35,35 @@
     "agent",
     "skillstate",
     "token-savings",
+    "reduce-llm-costs",
     "context-management",
     "long-horizon",
+    "long-horizon-tasks",
     "proxy",
     "openai-compatible",
     "anthropic",
+    "model-agnostic",
     "cost-optimization",
     "prompt-compression",
-    "arxiv"
+    "arxiv",
+    "emnlp",
+    "llm-proxy",
+    "agent-runtime",
+    "token-efficiency",
+    "ai-cost-reduction",
+    "structured-state",
+    "venice",
+    "openrouter",
+    "vllm",
+    "ollama"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NosytLabs/skillstate-proxy.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.0.0",

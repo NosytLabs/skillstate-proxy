@@ -186,27 +186,26 @@ export function buildStepPrompt(
   observation: string,
   opts: { stateAsSystem?: boolean } = {},
 ): { system: string; user: string } {
-  const stateJson = JSON.stringify(session.state, null, 2);
+  // Paper §A.4: compact JSON (no whitespace) to minimize prompt tokens
+  const stateJson = JSON.stringify(session.state);
   const sys = [
     session.spec,
     "",
-    "=== EXECUTION STATE (Σ) ===",
-    "This is the ONLY state you retain across steps. Update it via a structured ```json block.",
-    "Do NOT repeat prior conversation; it is gone. Be concise.",
-    "Set a key to null to delete it. Only keys in the schema are allowed.",
-    "",
+    "Skill Execution State:",
+    "```json",
     stateJson,
+    "```",
   ].join("\n");
   const usr = [
-    "=== LATEST OBSERVATION (O) ===",
+    "Latest Observation:",
     observation,
     "",
-    "Respond in EXACTLY this shape:",
-    "1) Brief reasoning (will be discarded after this step).",
-    "2) A single ```json block whose top-level object has exactly these keys:",
-    '   { "state_patch": { <dict: your state mutations; null deletes a key> },',
-    '     "action":      "<string: the exact command / answer you want to execute>" }',
-    "Nothing else. Do not output any other JSON blocks.",
+    "Provide your response with:",
+    "1. Step-by-step reasoning (will be discarded after execution)",
+    "2. A JSON block fenced with ```json ... ``` containing both your State Patch and your Action.",
+    '   The JSON block MUST have exactly these two keys:',
+    '   { "state_patch": { <dict: your state updates, set keys to null to delete> },',
+    '     "action": "<string: the exact command you want to execute>" }',
   ].join("\n");
   return { system: sys, user: usr };
 }

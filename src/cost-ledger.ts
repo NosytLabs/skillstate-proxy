@@ -8,12 +8,11 @@ export interface CostRow {
   inputTokens: number;
   outputTokens: number;
   costUsd: number;
-  // Gonka dual accounting
   costGnk?: number;
-  // skillstate extras
   promptTokensViaSkillstate?: number;
   savedTokens?: number;
 }
+
 export interface CostSummary {
   totalUsd: number;
   totalGnk: number;
@@ -23,20 +22,29 @@ export interface CostSummary {
 
 export class CostLedger {
   private path: string;
+
   constructor(path: string) {
     this.path = path;
     mkdirSync(join(path, ".."), { recursive: true });
     if (!existsSync(path)) writeFileSync(path, "", "utf-8");
   }
+
   record(row: CostRow): void {
-    try { appendFileSync(this.path, JSON.stringify(row) + "\n", "utf-8"); } catch {}
+    try {
+      appendFileSync(this.path, JSON.stringify(row) + "\n", "utf-8");
+    } catch (err: any) {
+      console.error(`[skillstate] cost-ledger: failed to write: ${err?.message ?? err}`);
+    }
   }
+
   summarize(windowMs = 24 * 60 * 60 * 1000): CostSummary {
     if (!existsSync(this.path)) return { totalUsd: 0, totalGnk: 0, byModel: {}, byUpstream: {} };
     const cutoff = Date.now() - windowMs;
-    let totalUsd = 0, totalGnk = 0;
+    let totalUsd = 0;
+    let totalGnk = 0;
     const byModel: Record<string, { cost: number; tokens: number }> = {};
     const byUpstream: Record<string, number> = {};
+
     for (const line of readFileSync(this.path, "utf-8").split("\n").filter(Boolean)) {
       try {
         const r = JSON.parse(line) as CostRow;
@@ -48,10 +56,12 @@ export class CostLedger {
         if (r.costGnk !== undefined && r.costGnk !== null && Number.isFinite(r.costGnk)) totalGnk += r.costGnk;
         if (r.model) {
           if (!byModel[r.model]) byModel[r.model] = { cost: 0, tokens: 0 };
-          byModel[r.model]!.cost += (r.costUsd && Number.isFinite(r.costUsd)) ? r.costUsd : 0;
+          byModel[r.model]!.cost += r.costUsd && Number.isFinite(r.costUsd) ? r.costUsd : 0;
           byModel[r.model]!.tokens += (r.inputTokens || 0) + (r.outputTokens || 0);
         }
-      } catch {}
+      } catch {
+        // malformed line — skip
+      }
     }
     return { totalUsd, totalGnk, byModel, byUpstream };
   }

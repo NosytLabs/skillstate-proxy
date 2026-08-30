@@ -49,12 +49,15 @@ the new observation carry forward.
 
 ### 2.1 Expected model reply shape (paper format)
 
-```jsonc
+The model outputs a fenced JSON block containing `state_patch` (delta Σ) and `action`:
+
+```
 ```json
 {
   "state_patch": { "key": "new_value", "old_key": null },
   "action":      "<string>"
 }
+```
 ```
 ```
 

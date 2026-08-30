@@ -8,10 +8,9 @@ function loadConfig(): Partial<ProxyConfig> {
     try {
       return JSON.parse(readFileSync(cfgPath, "utf-8"));
     } catch {
-      /* ignore */
+      console.error(`[skillstate] failed to parse config file: ${cfgPath}`);
     }
   }
-  // env-driven
   const upstreams = process.env.SKILLSTATE_UPSTREAM
     ? [{ name: "env", url: process.env.SKILLSTATE_UPSTREAM, apiKey: process.env.SKILLSTATE_API_KEY, priority: 0 }]
     : DEFAULT_CONFIG.upstreams;
@@ -24,7 +23,16 @@ function loadConfig(): Partial<ProxyConfig> {
 }
 
 const cfg = loadConfig();
-startProxy(cfg).then(() => {
-  // eslint-disable-next-line no-console
-  console.log("[skillstate] ready. Point OpenAI-compatible clients at http://127.0.0.1:" + (cfg.listenPort ?? DEFAULT_CONFIG.listenPort));
+
+startProxy(cfg).then(({ port, close }) => {
+  console.log(`[skillstate] ready. Point OpenAI-compatible clients at http://127.0.0.1:${port}`);
+
+  const shutdown = () => {
+    console.log("\n[skillstate] shutting down…");
+    close();
+    process.exit(0);
+  };
+
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 });
