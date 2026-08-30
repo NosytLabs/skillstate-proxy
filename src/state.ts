@@ -1,18 +1,34 @@
 /**
- * SKILL.state runtime core (arXiv:2608.26263).
+ * SKILL.state runtime core — arXiv:2608.26263 (Badhe, Tiwari, Chung; EMNLP 2026).
  *
- * The proxy keeps an explicit, mutable execution state Σ server-side per
- * conversation. At each LLM step the model receives ONLY:
- *   - P  : immutable procedural specification (the system prompt / task)
- *   - Σt : the current structured execution state (a JSON object)
- *   - Ot : the latest observation (the most recent assistant/tool/user turn)
+ * At each step t the model receives ONLY the triple A_t = (P, Σ_t, O_t):
+ *   - P    : immutable procedural specification (system prompt / task)
+ *   - Σ_t  : structured execution state (JSON)
+ *   - O_t  : latest observation from the environment
  *
- * The model is asked to emit a structured delta ΔΣ + action. After a validated
- * update, the intermediate reasoning R is DISCARDED. Only Σ_{t+1} = Σt ⊕ ΔΣ
- * survives. ⊕ is a dictionary merge with null-deletion semantics.
+ * The model emits (R_t, ΔΣ_t, a_t): reasoning + a `state_patch` ΔΣ_t + an
+ * `action` a_t, in a single ```json ... ``` block:
  *
- * Complexity: O(1) prompt per step, O(T) cumulative tokens (vs O(T²) for
- * append-only transcript runtimes).
+ *   ```json
+ *   {
+ *     "state_patch": { "key": newValue, "old_key": null },
+ *     "action": "<string>"
+ *   }
+ *   ```
+ *
+ * Setting a key to `null` deletes it (null-deletion semantics).
+ * The runtime validates ΔΣ_t deterministically; on failure it triggers a
+ * rollback-retry (the proxy re-prompts the model). On success:
+ *
+ *     Σ_{t+1} = Σ_t ⊕ ΔΣ_t
+ *
+ * The reasoning R_t is then DISCARDED permanently and never appears in the
+ * next prompt. Complexity: O(1) per-step prompt, O(T) cumulative tokens,
+ * vs O(T²) for append-only transcript runtimes.
+ *
+ * §3.1 Schema authoring: schemas are domain-level (e.g. InterCode CTF reuses
+ * a single 5-field schema across all 100 instances). State is the ONLY
+ * information that survives across steps.
  */
 
 export interface StateSession {
@@ -58,58 +74,99 @@ export function mergeState(
 /**
  * Extract a structured ΔΣ from a model's text output.
  *
- * We support two encodings the model may use:
- *   1. A fenced ```json ... ``` block tagged "state" / "delta" / "Σ".
- *   2. An inline `@state {json}` or `STATE: {json}` marker.
- *   3. A top-level `"state"` / `"delta"` key if the whole output is JSON.
+ * Recognised encodings (in priority order):
+ *   1. **Paper format (preferred).** A fenced ```json block whose top-level
+ *      object has a `state_patch` key (aliases: `statePatch` / `delta` /
+ *      `state` / `sigma`). May also carry `action` (or `command`).
+ *   2. **Legacy fenced block.** A fenced ```json / state / delta / Σ block
+ *      whose body IS the state dict (no `state_patch` wrapper).
+ *   3. **Inline marker.** `@state {…}` / `STATE: {…}` / `ΔΣ: {…}` / `DELTA: {…}`.
+ *   4. **Whole-output JSON.** The entire message is a JSON object that has a
+ *      `state_patch` / `state` / `delta` / `sigma` key.
  *
- * Anything outside the delta is treated as the discarded reasoning R.
- * Returns the parsed delta (possibly empty) and the raw "reasoning" remainder.
+ * Returns:
+ *   - `delta`     : the parsed state patch (may be `{}` for a valid no-op).
+ *   - `action`    : the model's chosen action string (paper format), else `undefined`.
+ *   - `reasoning` : everything outside the JSON block (the discarded R_t).
+ *   - `valid`     : `true` iff a paper-format `state_patch` was found.
+ *                   The proxy uses this to trigger rollback-retry when the
+ *                   model fails to emit a structured state update.
+ *   - `format`    : which encoding matched (`"paper"` / `"legacy"` / `"none"`).
  */
 export function extractDelta(text: string): {
   delta: Record<string, unknown>;
+  action?: string;
   reasoning: string;
+  valid: boolean;
+  format: "paper" | "legacy" | "none";
 } {
   let delta: Record<string, unknown> = {};
+  let action: string | undefined;
   let reasoning = text;
+  let format: "paper" | "legacy" | "none" = "none";
+  let valid = false;
 
-  // 1. fenced block with a state/delta/Σ tag
-  const fence = text.match(/```(?:json|state|delta|sigma|Σ)\s*\n([\s\S]*?)```/i);
+  const pickPatch = (o: Record<string, unknown>) =>
+    (o.state_patch ?? o.statePatch ?? o.delta ?? o.state ?? o.sigma) as unknown | undefined;
+  const pickAction = (o: Record<string, unknown>): string | undefined => {
+    const a = o.action ?? o.command;
+    return typeof a === "string" ? a : undefined;
+  };
+
+  // 1. fenced json block (paper or legacy)
+  const fence = text.match(/```(?:json|state|delta|sigma|Σ)?\s*\n?([\s\S]*?)```/i);
   if (fence) {
     const parsed = tryJson(fence[1]);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-      delta = parsed as Record<string, unknown>;
-      reasoning = text.replace(fence[0], "").trim();
+      const obj = parsed as Record<string, unknown>;
+      const sp = pickPatch(obj);
+      if (sp && typeof sp === "object" && !Array.isArray(sp)) {
+        delta = sp as Record<string, unknown>;
+        action = pickAction(obj);
+        format = "paper";
+        valid = true;
+        reasoning = text.replace(fence[0], "").trim();
+      } else {
+        delta = obj;
+        format = "legacy";
+        reasoning = text.replace(fence[0], "").trim();
+      }
     }
   }
 
-  // 2. inline @state / STATE: marker
+  // 2. inline @state / STATE: marker (legacy)
   if (Object.keys(delta).length === 0) {
     const inline = text.match(/(?:@state|STATE:|ΔΣ:|DELTA:)\s*(\{[\s\S]*?\})\s*(?:\n|$)/i);
     if (inline) {
       const parsed = tryJson(inline[1]);
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         delta = parsed as Record<string, unknown>;
+        format = "legacy";
       }
     }
   }
 
-  // 3. whole-output JSON with a state/delta key
+  // 3. whole-output JSON
   if (Object.keys(delta).length === 0) {
     const whole = tryJson(text.trim());
     if (whole && typeof whole === "object" && !Array.isArray(whole)) {
-      const cand = (whole as Record<string, unknown>).state ??
-        (whole as Record<string, unknown>).delta ??
-        (whole as Record<string, unknown>).sigma;
-      if (cand && typeof cand === "object" && !Array.isArray(cand)) {
-        delta = cand as Record<string, unknown>;
+      const obj = whole as Record<string, unknown>;
+      const sp = pickPatch(obj);
+      if (sp && typeof sp === "object" && !Array.isArray(sp)) {
+        delta = sp as Record<string, unknown>;
+        action = pickAction(obj);
+        format = "paper";
+        valid = true;
+        reasoning = "";
+      } else if (sp && typeof sp === "object") {
+        delta = sp as Record<string, unknown>;
+        format = "legacy";
         reasoning = "";
       }
     }
   }
 
-  // restrict to schema when provided
-  return { delta, reasoning };
+  return { delta, action, reasoning, valid, format };
 }
 
 function tryJson(s: string): unknown {
@@ -122,7 +179,7 @@ function tryJson(s: string): unknown {
 
 /**
  * Build the prompt the upstream model receives: (P, Σ, O) only.
- * No history, no prior reasoning.
+ * No history, no prior reasoning. Paper §3.2 prompt template (Appendix A.4).
  */
 export function buildStepPrompt(
   session: StateSession,
@@ -134,15 +191,22 @@ export function buildStepPrompt(
     session.spec,
     "",
     "=== EXECUTION STATE (Σ) ===",
-    "This is the ONLY state you retain across steps. Update it via a ```json delta block.",
-    "Set a key to null to delete it. Do NOT repeat prior conversation; it is gone.",
+    "This is the ONLY state you retain across steps. Update it via a structured ```json block.",
+    "Do NOT repeat prior conversation; it is gone. Be concise.",
+    "Set a key to null to delete it. Only keys in the schema are allowed.",
+    "",
     stateJson,
   ].join("\n");
   const usr = [
     "=== LATEST OBSERVATION (O) ===",
     observation,
     "",
-    "Respond with: (1) brief reasoning, then (2) a ```json delta block of state mutations, then (3) your action/answer.",
+    "Respond in EXACTLY this shape:",
+    "1) Brief reasoning (will be discarded after this step).",
+    "2) A single ```json block whose top-level object has exactly these keys:",
+    '   { "state_patch": { <dict: your state mutations; null deletes a key> },',
+    '     "action":      "<string: the exact command / answer you want to execute>" }',
+    "Nothing else. Do not output any other JSON blocks.",
   ].join("\n");
   return { system: sys, user: usr };
 }

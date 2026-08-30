@@ -36,6 +36,13 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   // generic gonka fallback (any model via gonka gateway)
   "gonka": { input: 0.0012, output: 0.0012, source: "gonka.broker — 0.01 GNK/1M @ $0.12", asOf: "2026-08-29" },
 
+  // ── Venice (venice.ai) ──────────────────────────────────────
+  // https://docs.venice.ai/llms.txt — per 1M tokens, USD
+  "qwen3-5-9b": { input: 0.10, output: 0.15, source: "venice.ai", asOf: "2026-08-29" },
+  "kimi-k3": { input: 0.15, output: 0.60, source: "venice.ai", asOf: "2026-08-29" },
+  "claude-opus-4.5": { input: 15.0, output: 75.0, source: "venice.ai (via openai compat)", asOf: "2026-08-29" },
+  "claude-sonnet-4.5": { input: 3.0, output: 15.0, source: "venice.ai (via openai compat)", asOf: "2026-08-29" },
+
   // ── TokenRouter (aggregator — free tier used in benchmarks) ───────
   "z-ai/glm-5.3-free": { input: 0, output: 0, source: "tokenrouter free tier", asOf: "2026-08-29" },
 

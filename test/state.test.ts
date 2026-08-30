@@ -27,7 +27,49 @@ describe("mergeState (null-deletion semantics)", () => {
   });
 });
 
-describe("extractDelta", () => {
+describe("extractDelta (paper format: state_patch + action)", () => {
+  it("parses paper format with state_patch and action, marks valid", () => {
+    const txt = 'Reasoning here.\n```json\n{"state_patch": {"step": 3, "flag": "found"}, "action": "ls"}\n```';
+    const { delta, action, valid, format } = extractDelta(txt);
+    expect(delta).toEqual({ step: 3, flag: "found" });
+    expect(action).toBe("ls");
+    expect(valid).toBe(true);
+    expect(format).toBe("paper");
+  });
+
+  it("parses whole-output paper format (state_patch + action at top level)", () => {
+    const txt = JSON.stringify({ state_patch: { a: 1 }, action: "do it" });
+    const { delta, action, valid, format } = extractDelta(txt);
+    expect(delta).toEqual({ a: 1 });
+    expect(action).toBe("do it");
+    expect(valid).toBe(true);
+    expect(format).toBe("paper");
+  });
+
+  it("legacy fenced block (whole body is the delta) — valid=false (no state_patch wrapper)", () => {
+    const txt = '```json\n{"step": 1}\n```';
+    const { delta, valid, format } = extractDelta(txt);
+    expect(delta).toEqual({ step: 1 });
+    expect(valid).toBe(false);
+    expect(format).toBe("legacy");
+  });
+
+  it("returns valid=false on plain text (triggers rollback-retry)", () => {
+    const { delta, valid, format } = extractDelta("just reasoning, no json");
+    expect(delta).toEqual({});
+    expect(valid).toBe(false);
+    expect(format).toBe("none");
+  });
+
+  it("null in state_patch deletes a key (null-deletion)", () => {
+    const txt = '```json\n{"state_patch": {"old": null, "new": "x"}, "action": "go"}\n```';
+    const { delta, valid } = extractDelta(txt);
+    expect(delta).toEqual({ old: null, new: "x" });
+    expect(valid).toBe(true);
+  });
+});
+
+describe("extractDelta (legacy formats — backward compat)", () => {
   it("parses a fenced json state block", () => {
     const txt = "My reasoning here.\n```json\n{\"step\": 3, \"flag\": \"found\"}\n```\nAction: done.";
     const { delta } = extractDelta(txt);

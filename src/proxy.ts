@@ -1,11 +1,10 @@
 /**
  * skillstate-proxy — OpenAI-compatible proxy enforcing SKILL.state discipline.
- * Now merged with headroom infra: circuit breaker, rate limiter, cost ledger,
- * pricing (USD+GNK), multi-upstream fallback, and model-agnostic (OpenAI/Anthropic).
+ * Rewrites every request to (P, Σ, O), validates + persists ΔΣ, discards reasoning.
+ * Includes production hardening: circuit breaker, rate limiter, cost ledger,
+ * multi-upstream failover, and Anthropic↔OpenAI translation.
  *
- * Based on:
- *  - SKILL.state (arXiv:2608.26263) — https://arxiv.org/abs/2608.26263
- *  - headroom (loonie) — rate limiter, circuit breaker, cost ledger, SSE passthrough
+ * Based on SKILL.state (arXiv:2608.26263) — https://arxiv.org/abs/2608.26263
  */
 
 import { createServer, IncomingMessage } from "node:http";
@@ -28,6 +27,10 @@ export interface UpstreamConfig {
   tpm?: number;
   rpm?: number;
   openrouter?: boolean;
+  /** Settlement currency for the cost ledger. "usd" (default) or "gnk" (Gonka). */
+  currency?: "usd" | "gnk";
+  /** Optional override for USD price (per 1M tokens, summed in/out) when no model match. */
+  flatPricePerMTokens?: number;
 }
 
 export interface ProxyConfig {
@@ -39,17 +42,26 @@ export interface ProxyConfig {
   discardReasoning: boolean;
   costLedgerPath: string;
   openrouterZdr?: boolean;
+  /** Maximum rollback-retry attempts on invalid (no-paper-format) ΔΣ (default 2). */
+  maxRetries?: number;
 }
 
 export const DEFAULT_CONFIG: ProxyConfig = {
+  // Generic OpenAI-compatible default. Override via config file, CLI flags,
+  // or SKILLSTATE_UPSTREAM env var. Works with any /v1/chat/completions
+  // upstream: OpenAI, Anthropic-via-OpenAI, OpenRouter, Venice, Gonka,
+  // omlx, llama.cpp, vLLM, etc. Set OPENAI_API_KEY (or your provider's key)
+  // in the environment to authenticate.
   listenPort: 8789,
-  upstreams: [{ name: "tokenrouter", url: "https://api.tokenrouter.com/v1", priority: 0 }],
+  upstreams: [{ name: "openai", url: "https://api.openai.com/v1", priority: 0 }],
   stateDir: join(process.env.HOME ?? "/tmp", ".skillstate/state"),
   schema: [],
   initialState: {},
   discardReasoning: true,
   costLedgerPath: join(process.env.HOME ?? "/tmp", ".skillstate/spend.jsonl"),
   openrouterZdr: false,
+  /** Max times to re-prompt the model if it fails to emit a paper-format ΔΣ. */
+  maxRetries: 2,
 };
 
 const sessions = new Map<string, StateSession>();
@@ -188,21 +200,51 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<{ port
             const { warnings } = applyDelta(session, delta); saveSession(config.stateDir, sid, session);
             const usage = extractUsage(upstreamRes.body);
             const inputTokens = usage?.inputTokens ?? parsed.inTok; const outputTokens = usage?.outputTokens ?? parsed.outTok;
-            const usd = costFor(body.model ?? "", inputTokens, outputTokens); const gnk = u.name.includes("gonka") ? gonkaCost(inputTokens+outputTokens).gnk : undefined;
+            const usd = costFor(body.model ?? "", inputTokens, outputTokens); const gnk = u.currency === "gnk" ? gonkaCost(inputTokens+outputTokens).gnk : undefined;
             ledger.record({ ts: new Date().toISOString(), upstream: u.name, model: body.model ?? "", inputTokens, outputTokens, costUsd: usd, costGnk: gnk });
             res.statusCode=upstreamRes.status; res.setHeader("content-type","text/event-stream"); res.setHeader("x-skillstate-session", sid); res.setHeader("x-skillstate-step", String(session.step)); res.setHeader("x-skillstate-statekeys", Object.keys(session.state).join(",")); res.setHeader("x-skillstate-upstream", u.name); if (warnings.length) res.setHeader("x-skillstate-validation", warnings.join("|")); res.end(upstreamRes.body); return;
           }
           let upstreamJson: any; try { upstreamJson = JSON.parse(upstreamRes.body); } catch { res.statusCode=upstreamRes.status; res.setHeader("content-type","application/json"); for (const[k,v] of Object.entries(upstreamRes.headers)) res.setHeader(k,v); res.end(upstreamRes.body); return; }
-          const content: string = upstreamJson.choices?.[0]?.message?.content ?? "";
-          const { delta } = extractDelta(content);
-          const { warnings } = applyDelta(session, delta); saveSession(config.stateDir, sid, session);
-          const usage = upstreamJson.usage ?? {}; const inputTokens = usage.prompt_tokens ?? 0; const outputTokens = usage.completion_tokens ?? 0;
-          const usd = costFor(body.model ?? upstreamJson.model ?? "", inputTokens, outputTokens); const gnk = u.name.includes("gonka") ? gonkaCost(inputTokens+outputTokens).gnk : undefined;
-          ledger.record({ ts: new Date().toISOString(), upstream: u.name, model: body.model ?? upstreamJson.model ?? "", inputTokens, outputTokens, costUsd: usd, costGnk: gnk });
 
-          let outJson = upstreamJson;
-          if (isAnthropic && normalized) outJson = denormalizeResponse(normalized, upstreamJson);
-          res.statusCode=200; res.setHeader("content-type","application/json"); res.setHeader("x-skillstate-session", sid); res.setHeader("x-skillstate-step", String(session.step)); res.setHeader("x-skillstate-statekeys", Object.keys(session.state).join(",")); res.setHeader("x-skillstate-upstream", u.name); res.setHeader("x-skillstate-cost-usd", String(usd.toFixed(6))); if (gnk) res.setHeader("x-skillstate-cost-gnk", String(gnk.toFixed(6))); if (warnings.length) res.setHeader("x-skillstate-validation", warnings.join("|"));
+          // ---- Rollback-retry (paper §"invalid patch triggers rollback-retry") ----
+          // If the model failed to emit a paper-format ΔΣ, retry by re-prompting
+          // with an appended corrective instruction. Bounded by config.maxRetries.
+          let attempts = 0;
+          let retriesUsed = 0;
+          let lastRetriedBody = upstreamBody;
+          const maxRetries = config.maxRetries ?? 2;
+          let content: string = upstreamJson.choices?.[0]?.message?.content ?? "";
+          let ex = extractDelta(content);
+          let { delta } = ex;
+          let modelRawJson = upstreamJson;
+          while (ex.format !== "paper" && attempts < maxRetries && content.length > 0) {
+            // mutate lastRetriedBody's user message with a corrective suffix
+            try {
+              const parsed = JSON.parse(lastRetriedBody);
+              const um = parsed?.messages?.[1];
+              if (um && typeof um.content === "string") {
+                um.content = um.content + "\n\n[CORRECTION: Your previous reply did NOT include a structured ```json block with a `state_patch` key. Reply again with ONLY: (1) brief reasoning, (2) a single ```json block containing {\"state_patch\": {…}, \"action\": \"…\"}.]";
+              }
+              lastRetriedBody = JSON.stringify(parsed);
+            } catch { break; }
+            const retryRes = await callUpstream(u, "/v1/chat/completions", lastRetriedBody);
+            if (retryRes.status >= 500) { breaker.recordFailure(); break; }
+            breaker.recordSuccess();
+            try { modelRawJson = JSON.parse(retryRes.body); } catch { break; }
+            content = modelRawJson.choices?.[0]?.message?.content ?? "";
+            ex = extractDelta(content);
+            delta = ex.delta;
+            attempts++; retriesUsed++;
+            if (ex.format === "paper") break;
+          }
+          const { warnings } = applyDelta(session, delta); saveSession(config.stateDir, sid, session);
+          const usage = modelRawJson.usage ?? {}; const inputTokens = usage.prompt_tokens ?? 0; const outputTokens = usage.completion_tokens ?? 0;
+          const usd = costFor(body.model ?? modelRawJson.model ?? "", inputTokens, outputTokens); const gnk = u.currency === "gnk" ? gonkaCost(inputTokens+outputTokens).gnk : undefined;
+          ledger.record({ ts: new Date().toISOString(), upstream: u.name, model: body.model ?? modelRawJson.model ?? "", inputTokens, outputTokens, costUsd: usd, costGnk: gnk });
+
+          let outJson = modelRawJson;
+          if (isAnthropic && normalized) outJson = denormalizeResponse(normalized, modelRawJson);
+          res.statusCode=200; res.setHeader("content-type","application/json"); res.setHeader("x-skillstate-session", sid); res.setHeader("x-skillstate-step", String(session.step)); res.setHeader("x-skillstate-statekeys", Object.keys(session.state).join(",")); res.setHeader("x-skillstate-upstream", u.name); res.setHeader("x-skillstate-cost-usd", String(usd.toFixed(6))); if (gnk) res.setHeader("x-skillstate-cost-gnk", String(gnk.toFixed(6))); if (warnings.length) res.setHeader("x-skillstate-validation", warnings.join("|")); if (retriesUsed > 0) res.setHeader("x-skillstate-retries", String(retriesUsed)); if (ex.action) res.setHeader("x-skillstate-action", ex.action.slice(0, 200));
           res.end(JSON.stringify(outJson)); return;
         } catch (e:any) { breakers.get(u.name)!.recordFailure(); lastErr={status:502, body: JSON.stringify({ error: (e as Error).message })}; }
       }
@@ -212,13 +254,15 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<{ port
 
   return new Promise((resolve)=>{
     server.listen(config.listenPort, "127.0.0.1", ()=>{
+      const addr = server.address();
+      const port = addr && typeof addr === "object" ? addr.port : config.listenPort;
       // eslint-disable-next-line no-console
-      console.log(`[skillstate] proxy on http://127.0.0.1:${config.listenPort}`);
+      console.log(`[skillstate] proxy on http://127.0.0.1:${port}`);
       // eslint-disable-next-line no-console
-      console.log(`[skillstate] upstreams: ${upstreams.map(u=>u.name+"@"+u.url+(u.tpm?` tpm=${u.tpm}`:"")+(u.rpm?` rpm=${u.rpm}`:"")).join(", ")}`);
+      console.log(`[skillstate] upstreams: ${upstreams.map(u=>u.name+"@"+u.url+(u.tpm?` tpm=${u.tpm}`:"")+(u.rpm?` rpm=${u.rpm}`:"")+(u.currency?` currency=${u.currency}`:"")).join(", ")}`);
       // eslint-disable-next-line no-console
       console.log(`[skillstate] state dir: ${config.stateDir}`);
-      resolve({ port: config.listenPort, close: ()=>server.close(), ledger });
+      resolve({ port, close: ()=>server.close(), ledger });
     });
   });
 }
