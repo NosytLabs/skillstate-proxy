@@ -1,7 +1,7 @@
 {
   "name": "skillstate-proxy",
   "version": "0.1.0",
-  "description": "OpenAI-compatible proxy enforcing SKILL.state (arXiv:2608.26263) — bounded O(1) prompts, O(T) total tokens for long-horizon LLM agents. Drop-in front of Venice, OpenAI, Anthropic, OpenRouter, or any compatible upstream.",
+  "description": "LLM agent token savings proxy — drops prompt tokens 60%+ on long-horizon tasks via SKILL.state (arXiv:2608.26263). OpenAI-compatible, works with any upstream.",
   "type": "module",
   "license": "MIT",
   "bin": {
@@ -18,12 +18,15 @@
     "llm",
     "agent",
     "skillstate",
-    "arxiv",
+    "token-savings",
     "context-management",
+    "long-horizon",
     "proxy",
     "openai-compatible",
-    "long-horizon",
-    "token-savings"
+    "anthropic",
+    "cost-optimization",
+    "prompt-compression",
+    "arxiv"
   ],
   "dependencies": {},
   "devDependencies": {
