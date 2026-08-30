@@ -1,20 +1,7 @@
 node_modules/
 dist/
-*.log
 .env
-.env.local
+*.log
 .DS_Store
-# per-session state and cost ledger (operator-only)
-/tmp/ss-*
-/tmp/skillstate-*
-/tmp/ss-ds50-*
-/tmp/ss-or502-*
-/tmp/ss-or503-*
-/tmp/ss-warehouse-*
-/tmp/ss-tau-*
-/tmp/ss-repo-*
-/tmp/ss-repo50-*
-/tmp/ss-bench-*
-/tmp/ss-ctf-*
-/tmp/ss-gonka-*
-/tmp/skillstate-live-*
+tmp/
+tmp/**/*

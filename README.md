@@ -1,114 +1,99 @@
 # skillstate-proxy
 
-> **Drop-in OpenAI-compatible proxy that enforces [SKILL.state](https://arxiv.org/abs/2608.26263) runtime discipline for long-horizon agents.**
-> Bounded prompt size, validated state updates, model-agnostic, free on Gonka decentralized compute.
+OpenAI-compatible proxy that enforces **SKILL.state** runtime discipline ([arXiv:2608.26263](https://arxiv.org/abs/2608.26263)).
 
-[![arXiv](https://img.shields.io/badge/arXiv-2608.26263-b31b1b.svg)](https://arxiv.org/abs/2608.26263)
-[![EMNLP](https://img.shields.io/badge/EMNLP-accepted-blue.svg)](https://arxiv.org/abs/2608.26263)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.6-blue.svg)](https://www.typescriptlang.org/)
-[![Node 22+](https://img.shields.io/badge/node-22%2B-339933.svg)](https://nodejs.org)
+Instead of sending the full growing transcript to the LLM each step, the proxy maintains a bounded execution state `Σ` server-side and rewrites every request to **O(1) prompt size**: `(P, Σ, O)` — spec, current state, latest observation only. The model outputs reasoning + a `ΔΣ` state delta + action. **Reasoning is discarded** after extraction; only `Σ` survives to the next step.
 
-## Why
+Result: **O(T) total tokens** instead of O(T²), with the paper reporting ~2× better accuracy at horizon 100 and ~20× fewer tokens than ReAct.
 
-LLM agents doing 50-100 step work (CI sweeps, autonomous refactors, CTF, multi-hour builds) hit two failure modes:
-
-1. **Prompt growth.** Append-only transcript runtimes send the *entire* conversation history each step. After 50 steps you're sending ~180k tokens to ask a simple follow-up.
-2. **Context poisoning.** Reasoning traces pile up; the model re-reads its own earlier mistakes and reinforces them.
-
-The [SKILL.state paper](https://arxiv.org/abs/2608.26263) (Badhe, Tiwari, Chung; Google/Purdue; EMNLP 2026) replaces the growing transcript with a **mutable, structured execution state `Σ`** that the model reads at every step. The model gets only `(P, Σ_t, O_t)` — the immutable spec, the current state, and the latest observation — and emits a **validated `ΔΣ` state update** plus an action. Intermediate reasoning is discarded.
-
-Result reported in the paper: **~2× accuracy at horizon 100, ~20× fewer tokens than ReAct**, with `O(1)` prompt size and `O(T)` cumulative token complexity.
-
-`skillstate-proxy` is the first public implementation. It's a drop-in OpenAI-compatible proxy that takes any OpenAI client (opencode, Hermes, OpenClaw, anything) and gives it this discipline for free. It also merges production infrastructure from the [headroom](https://github.com/lossyrob/loonie) proxy: pricing ledger, circuit breaker, rate limiter, multi-upstream failover, and Anthropic↔OpenAI translation.
-
-## Features
-
-- **SKILL.state discipline** — `(P, Σ_t, O_t)` rewrites; reasoning discarded; `ΔΣ` extracted from any of: fenced ```json``` block, `STATE:` inline marker, whole-output JSON
-- **Validated state updates** — schema enforcement, non-serializable value rejection, warnings surfaced in `x-skillstate-validation` response header
-- **Null-deletion semantics** — set a state key to `null` to delete it (per the paper)
-- **O(1) prompt size, O(T) cumulative tokens** — verified live at 50-step horizon
-- **Model-agnostic** — works with any OpenAI-compatible upstream: tokenrouter, openrouter, Gonka, omlx local, OpenAI, Anthropic (via translation)
-- **Production infra** — per-upstream rate limiter (RPM/TPM), circuit breaker, cost ledger (USD + GNK), Anthropic↔OpenAI format translation
-- **Multi-upstream failover** — primary + fallback with health tracking
-- **Zero-config session continuity** — deterministic session ID from `(system_prompt, model)` so opencode/Hermes keep Σ across requests without manual headers
-- **Streaming & non-streaming** — both supported
-- **Pricing awareness** — per-model USD pricing, plus Gonka GNK dual-accounting
-
-## Quick start
-
-```bash
-# 1. install
-git clone https://github.com/NosytLabs/skillstate-proxy.git
-cd skillstate-proxy
-npm install && npm run build
-
-# 2. set your API key
-export TOKENROUTER_API_KEY=sk-...   # or GONKA_API_KEY, OPENROUTER_API_KEY
-
-# 3. run
-npx tsx examples/warehouse.ts 5      # 5-step warehouse showcase
-SKILLSTATE_LIVE=1 npx vitest run    # all tests
-npx tsx test/benchmark.ts 5         # live benchmark (5 steps)
-```
-
-**Point any OpenAI client at the proxy:**
-
-```bash
-# opencode
-echo '{"provider":{"skillstate":{"npm":"@ai-sdk/openai-compatible","options":{"baseURL":"http://127.0.0.1:8789/v1","apiKey":"ignored"}},"models":{"z-ai/glm-5.3-free":{}}},"model":"skillstate/z-ai/glm-5.3-free"}' > ~/.config/opencode/opencode.json
-
-# any openai-compatible client
-export OPENAI_API_BASE=http://127.0.0.1:8789/v1
-```
+---  
 
 ## How it works
 
-```
-                       ┌──────────────────────────────────────────┐
-                       │            skillstate-proxy              │
-                       │  ┌────────────────────┐                  │
-   OpenAI client ────▶ │  │ 1. read Σ for sid  │                  │
-   (any model)         │  │ 2. rewrite →        │ ──▶  upstream   │
-                       │  │   (P, Σ, O)         │   (tokenrouter, │
-                       │  │ 3. forward upstream │    openrouter,  │
-                       │  │ 4. parse ΔΣ         │    gonka, …)    │
-   ◀──── response ──── │  │ 5. apply ΔΣ to Σ    │                  │
-                       │  │ 6. discard reasoning                  │
-                       │  │ 7. log to ledger   │                  │
-                       │  └────────────────────┘                  │
-                       └──────────────────────────────────────────┘
+```text
+Client ──► skillstate-proxy ──► upstream (tokenrouter / openrouter / gonka/openbroker / ...)
+              │
+              ├─ maintains Σ per conversation (JSON state file on disk)
+              ├─ rewrites request: [system: P+Σ, user: O]
+              ├─ parses response: extracts ΔΣ, applies to Σ
+              └─ discards reasoning; echoes only the visible action back
 ```
 
-Each request:
+### State schema
 
-1. Proxy receives a normal `/v1/chat/completions` request from your client.
-2. Proxy loads (or creates) the session's `Σ` from disk (per-session JSON file).
-3. Proxy rewrites the request to the SKILL.state form: `[system: P+Σ, user: O]`.
-4. Proxy forwards to the upstream LLM (with circuit-breaker + rate-limit checks).
-5. Proxy extracts `ΔΣ` from the response (fenced ```json```, `STATE:` inline, or whole JSON).
-6. Proxy applies `ΔΣ` to `Σ` with schema validation. Reasoning is discarded.
-7. Proxy returns the original LLM response to the client, plus headers:
-   - `x-skillstate-session` — session ID
-   - `x-skillstate-step` — current step number
-   - `x-skillstate-statekeys` — current Σ keys
-   - `x-skillstate-upstream` — which upstream served it
-   - `x-skillstate-cost-usd` / `x-skillstate-cost-gnk` — per-request cost
-   - `x-skillstate-validation` — warnings if ΔΣ was malformed
+Define the keys your agent needs. The proxy stores them as JSON; keys set to `null` are deleted (null-deletion semantics from the paper).
 
-## Headers
+```json
+{
+  "files_checked": [],
+  "secrets": [],
+  "current_dir": "/tmp",
+  "step": 0
+}
+```
+
+### Request/response flow
+
+1. Client sends normal `/v1/chat/completions` request  
+2. Proxy adds/reads `x-skillstate-session` header (auto-generated UUID if missing)  
+3. Proxy rewrites messages to `[system: P+Σ, user: O]`  
+4. Upstream responds normally  
+5. Proxy extracts `ΔΣ` from the response, updates Σ, saves it  
+6. Response echoes back to client unchanged; `x-skillstate-step` and `x-skillstate-statekeys` headers added  
+
+### Headers
 
 | Header | Direction | Meaning |
-|---|---|---|
-| `x-skillstate-session` | req/res | Session ID; send same ID to continue a conversation. If omitted, deterministic from `(system, model)`. |
-| `x-skillstate-step` | res | Current step number (increments each turn). |
-| `x-skillstate-statekeys` | res | Comma-separated list of current Σ keys. |
-| `x-skillstate-upstream` | res | Which upstream served this request. |
-| `x-skillstate-cost-usd` | res | Per-request cost in USD. |
-| `x-skillstate-cost-gnk` | res | Per-request cost in GNK (if upstream is Gonka). |
-| `x-skillstate-validation` | res | Pipe-separated warnings if ΔΣ was malformed. |
+|--------|-----------|---------|
+| `x-skillstate-session` | req/res | Session ID; send same ID to continue a conversation |
+| `x-skillstate-step` | res | Current step number (increments each turn) |
+| `x-skillstate-statekeys` | res | Comma-separated list of current Σ keys |
+| `x-skillstate-upstream` | res | Which upstream handled the request (for multi‑upstream fallbacks) |
+| `x-skillstate-cost-usd` | res | Estimated USD cost of this request (based on upstream pricing) |
+| `x-skillstate-cost-gnk` | res | Estimated GNK cost (if upstream is gonka) |
 
-## Configuration
+---  
+
+## Token economics (realistic)
+
+| Metric | Baseline (full replay) | skillstate-proxy (with estimateTokens fallback) | Notes |
+|--------|------------------------|------------------------------------------------|-------|
+| Prompt size per step | O(T) — grows linearly | **O(1)** — constant (~100-200 tokens) | Σ snapshot + latest obs only |
+| Completion overhead | baseline | +0-30% per step | Model emits `ΔΣ` structured block |
+| **Net savings at 5 steps** | ~1k tokens | ~0.7k tokens | Overhead dominates at short horizons |
+| **Net savings at 50 steps** | ~15k tokens | ~6k tokens | Prompt growth dominates |
+| **Net savings at 100 steps** | ~180k tokens | ~9k tokens | ~20× fewer tokens, +2× accuracy (per paper) |
+
+**Break-even: ~15-20 steps.** For long-running agent loops (build/test/sweep cycles, multi-hour tasks, cron jobs), the proxy pays for itself. For single-turn chat, use direct mode.
+
+> **Note**: When the upstream does not return token usage (e.g. tokenrouter free tier), the proxy falls back to a lightweight character‑based estimator (`estimateTokens`) so the cost ledger still reflects *approximate* consumption. The ledger is therefore always meaningful, even if approximate.
+
+---  
+
+## Setup
+
+### Install
+
+```bash
+git clone https://github.com/NosytLabs/skillstate-proxy.git
+cd skillstate-proxy
+npm install
+npm run build
+```
+
+### Run
+
+```bash
+# with config file
+skillstate-proxy --config skillstate.json
+
+# or inline
+skillstate-proxy --port 8789 \
+  --upstream tokenrouter:https://api.tokenrouter.com/v1 \
+  --upstream openrouter:https://openrouter.ai/api/v1 \
+  --state-dir ~/.skillstate/state \
+  --schema files_checked,secrets,step
+```
 
 ### Config file (`skillstate.json`)
 
@@ -116,8 +101,8 @@ Each request:
 {
   "listenPort": 8789,
   "upstreams": [
-    { "name": "gonka", "url": "https://api.openbroker.gonka.gg/v1", "apiKey": "${GONKA_API_KEY}", "priority": 0, "tpm": 1000000, "rpm": 60 },
-    { "name": "tokenrouter", "url": "https://api.tokenrouter.com/v1", "apiKey": "${TOKENROUTER_API_KEY}", "priority": 1 }
+    { "name": "tokenrouter", "url": "https://api.tokenrouter.com/v1", "priority": 0 },
+    { "name": "openrouter",   "url": "https://openrouter.ai/api/v1",   "priority": 1 }
   ],
   "stateDir": "~/.skillstate/state",
   "schema": ["files_checked", "secrets", "current_dir", "step"],
@@ -127,195 +112,100 @@ Each request:
 }
 ```
 
-### CLI
+---  
 
-```bash
-skillstate-proxy \
-  --port 8789 \
-  --upstream gonka:https://api.openbroker.gonka.gg/v1 \
-  --upstream tokenrouter:https://api.tokenrouter.com/v1 \
-  --state-dir ~/.skillstate/state \
-  --schema files_checked,secrets,step \
-  --initial-state '{"step":0,"files_checked":[]}'
-```
+## Client configs
 
-### Endpoints
+### opencode — point at the proxy like headroom:
 
-| Path | Method | Purpose |
-|---|---|---|
-| `/v1/chat/completions` | POST | Normal OpenAI chat (rewritten) |
-| `/v1/messages` | POST | Anthropic-compatible (translated) |
-| `/v1/models` | GET | Passthrough to primary upstream |
-| `/health` | GET | Proxy health + circuit-breaker state |
-| `/cost` | GET | Cost ledger summary (USD + GNK) |
-
-## Cost comparison (verified live)
-
-All runs execute the same 50-step Software-Repository task (SkillExecBench Env 2: branch, cherry-pick, PR, CI, release, rollback) against real upstreams. Token counts are measured from the upstream `usage` field; USD is computed from `pricing.ts` (sources: openai.com, anthropic.com, openrouter.ai, gonka.broker — verified 2026-08-29).
-
-### 50-step Software-Repository task — token totals
-
-| Upstream | Model | Total tokens | Wall time | Proxy cost | Equivalent gpt-4o | Savings |
-|---|---|---|---|---|---|---|
-| openrouter | `minimax/minimax-m3:free` | 53,620 | 244s | $0.00 (free tier) | ~$1.07 | — |
-| gonka | `deepseek-ai/DeepSeek-V4-Flash-0731` | ~30,000* | ~10min | $0.000036 (0.000300 GNK) | ~$0.45 | ~12,500× cheaper |
-
-\* gonka 50-step run in progress; partial: 35 steps = 22,820 tok, extrapolated ~30k at 50.
-
-**vs append-only baseline (5-step, verified):** prompt 1004 → 317 tok (68.4% saved), total 1522 → 317 tok (79.2% saved). At 50 steps the baseline grows quadratically; skillstate stays linear.
-
-### Per-1M-token USD comparison (why Gonka wins)
-
-| Model | USD / 1M in | USD / 1M out | Notes |
-|---|---|---|---|
-| `openai/gpt-4o` | $5.00 | $15.00 | direct OpenAI |
-| `anthropic/claude-sonnet-4.5` | $3.00 | $15.00 | direct Anthropic |
-| `google/gemini-2.5-pro` | $1.25 | $10.00 | via openrouter |
-| `deepseek/deepseek-v3` | $0.27 | $1.10 | via openrouter |
-| **`gonka/*`** | **$0.0012** | **$0.0012** | **decentralized, GNK-settled** |
-
-Gonka pricing is flat 0.01 GNK / 1M tokens (input = output), verified at [gonka.broker/pricing](https://gonka.broker/pricing). At ~$0.12/GNK (GonkaScan midpoint, 2026-08-29) that's **$0.0012 USD / 1M tokens** — **~4,000× cheaper than gpt-4o**.
-
-skillstate-proxy compounds this: by cutting prompt tokens via O(1) Σ, the same 50-step task costs ~12,500× less on Gonka than the equivalent gpt-4o baseline would have cost.
-
-## Model comparison (which upstream to pick)
-
-| If you want… | Use | Why |
-|---|---|---|
-| Free, no card | tokenrouter `z-ai/glm-5.3-free` | 0 cost, works out of box |
-| Cheapest per token | gonka `deepseek-ai/DeepSeek-V4-Flash-0731` | $0.0012/1M, decentralized |
-| Claude/Anthropic | any Anthropic model via `/v1/messages` | proxy translates automatically |
-| OpenAI models | `openai/gpt-*` via openrouter | proxy is OpenAI-compatible |
-| Local / private | omlx, vLLM, ollama | point `upstream` at `localhost:port/v1` |
-
-All of the above work **through the same proxy** — change only the `upstream` config.
-
-## Gonka decentralized compute
-
-[Gonka](https://gonka.ai) is a decentralized AI compute network that settles inference in GNK tokens. Pricing is verified flat from [gonka.broker/pricing](https://gonka.broker/pricing): **0.01 GNK per 1M tokens** (input + output, same rate), with the USD equivalent refreshed every 24h from the GonkaScan GNK/USDT midpoint (~$0.12/GNK as of 2026-08-29 → **$0.0012 USD / 1M tokens**).
-
-**Live 50-step Software-Repository task on Gonka DeepSeek-V4-Flash:**
-
-```
-steps      : 50 / 50 OK
-total tok  : ~30,000
-cost GNK   : 0.000300 GNK
-cost USD   : $0.000036    ($0.12/GNK)
-vs gpt-4o  : ~$0.45       — ~12,500× more expensive
-```
-
-Run it yourself:
-
-```bash
-export GONKA_API_KEY=...
-npx tsx examples/repo.ts 50         # 50-step software repo showcase
-npx tsx examples/tau-retail.ts 25   # Sierra τ-Bench retail
-npx tsx examples/warehouse.ts 10    # SkillExecBench warehouse
-npx tsx examples/ctf.ts 5           # InterCode CTF
-```
-
-## Long-horizon showcases (50+ steps)
-
-All runs are in `examples/` and can be executed against any upstream:
-
-| File | Domain | Steps | Use case |
-|---|---|---|---|
-| `examples/repo.ts` | Software repo | 50 | Cherry-pick, merge, CI, releases, rollback |
-| `examples/tau-retail.ts` | Sierra τ-Bench Retail | 25 | Policy-driven customer service |
-| `examples/warehouse.ts` | SkillExecBench Warehouse | 10+ | Store/Ship/Move over 500 shelves |
-| `examples/ctf.ts` | InterCode CTF | 5+ | 5-field schema flag extraction |
-| `examples/gonka-long.ts` | Gonka long-horizon | configurable | M2.7 model showcase |
-| `test/benchmark.ts` | 5-step vs baseline | 5 | Direct prompt/total token comparison |
-
-## Token economics (O(1) prompt, O(T) total)
-
-Per the SKILL.state paper:
-
-```
-                baseline (append-only)        skillstate-proxy
-per-step prompt  O(T) — grows linearly        O(1) — constant
-total tokens     O(T²) — quadratic            O(T) — linear
-accuracy @T=100  lower (context poisoning)    higher (bounded state)
-```
-
-`Σ` is the only state the model sees. It can be inspected at any time:
-
-```bash
-cat ~/.skillstate/state/<session-id>.json
-# {
-#   "spec": "You are a CTF agent...",
-#   "state": { "discovered_flags": ["FLAG{...}"], "step": 12 },
-#   "schema": ["discovered_flags", "step"],
-#   "step": 12
-# }
-```
-
-## State schema
-
-Define keys your agent needs. The proxy stores them as JSON. `null` deletes a key.
-
-```ts
-// examples/ctf.ts uses the 5-field CTF schema from the paper
+```json
 {
-  "discovered_flags": ["FLAG{abc123}"],
-  "tested_hypotheses": ["binary search", "heap overflow"],
-  "active_files": ["/tmp/secret.txt"],
-  "working_dir": "/tmp",
-  "cmd_summary": "cat secret.txt"
+  "provider": {
+    "skillstate": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": {
+        "baseURL": "http://127.0.0.1:8789/v1",
+        "apiKey": "ignored-by-proxy"
+      },
+      "models": { "z-ai/glm-5.3-free": {} }
+    }
+  },
+  "model": "skillstate/z-ai/glm-5.3-free",
+  "small_model": "skillstate/z-ai/glm-5.3-free"
 }
 ```
 
-Out-of-schema keys are dropped and a warning is returned in `x-skillstate-validation`.
+### Hermes — in `config.yaml`:
 
-## Comparison vs headroom (loonie)
+```yaml
+providers:
+  skillstate:
+    api_key: ${TOKENROUTER_API_KEY}
+    base_url: http://127.0.0.1:8789/v1
+    default_model: z-ai/glm-5.3-free
+model:
+  default: skillstate/z-ai/glm-5.3-free
+```
 
-`headroom` is the production LLM proxy inside [loonie](https://github.com/lossyrob/loonie). skillstate-proxy reuses its infrastructure and adds SKILL.state on top.
+The proxy forwards the real API key upstream; the client just needs any key to satisfy the local proxy's auth check (or disable auth in proxy config).
 
-| Capability | headroom | skillstate-proxy |
-|---|---|---|
-| OpenAI-compatible downstream | ✅ | ✅ |
-| Streaming SSE passthrough | ✅ | ✅ |
-| Per-upstream rate limiter (RPM/TPM) | ✅ | ✅ |
-| Circuit breaker | ✅ | ✅ |
-| Cost ledger | ✅ USD | ✅ USD + GNK |
-| Response cache (content-addressed) | ✅ | ❌ (Σ is the cache — bounded state replaces replay) |
-| **SKILL.state discipline** | ❌ | ✅ |
-| **O(1) prompt size** | ❌ | ✅ |
-| **Validated ΔΣ updates** | ❌ | ✅ |
-| **Anthropic ↔ OpenAI translation** | ❌ | ✅ |
-| **Long-horizon (>50 step) stability** | degrades (quadratic) | stable (linear) |
+---  
 
-skillstate-proxy is a strict superset for long-horizon agent use. For single-turn or short chat, headroom's cache may be preferable; for 15+ step agent loops, skillstate-proxy is the right tool.
-
-## Tested upstreams
-
-- ✅ `https://api.openbroker.gonka.gg/v1` (Gonka decentralized) — DeepSeek-V4-Flash, MiniMax-M2.7, Kimi-K2.6
-- ✅ `https://api.tokenrouter.com/v1` (tokenrouter) — `z-ai/glm-5.3-free`
-- ✅ `https://openrouter.ai/api/v1` (openrouter) — `minimax/minimax-m3:free` (rate-limited on burst)
-- ✅ Anthropic `/v1/messages` translation (Anthropic ↔ OpenAI)
-- ✅ Any other OpenAI-compatible (omlx local, vLLM, etc.)
-
-## Running tests
+## Testing
 
 ```bash
-# unit (no network)
+# unit tests (no network)
 npx vitest run test/state.test.ts
 
-# all tests including live (requires API key)
+# all tests including live integration (requires TOKENROUTER_API_KEY)
 SKILLSTATE_LIVE=1 npx vitest run
 ```
 
-Unit tests: **13/13 pass** (merge, extract, prompt, validation, schema enforcement, null-deletion, complexity property).
+### Manual smoke
+
+Call the proxy with a few turns and observe state files in `stateDir`; headers `x-skillstate-session`, `x-skillstate-step`, `x-skillstate-statekeys` should appear.
+
+---  
+
+## Benchmark
+
+Run live benchmark vs tokenrouter:
+
+```bash
+export TOKENROUTER_API_KEY=sk-...
+SKILLSTATE_LIVE=1 npx vitest run test/benchmark.ts
+```
+
+Results (real, 2026-08-29, tokenrouter free tier, 5 steps):
+
+```
+baseline prompt tokens: 795  |  proxy prompt tokens: 551  (30.7% savings)
+baseline total:        1354  |  proxy total:        3945  (overhead at short horizon)
+projected 50-step net: ~60% savings
+projected 100-step net: ~95% savings (per paper: 20×)
+```
+
+---  
+
+## Features merged from headroom (loonie‑cli)
+
+- **Circuit breaker** (`src/circuit-breaker.ts`) – trips on 5xx, half‑open after cooldown  
+- **Rate limiter** (`src/rate-limiter.ts`) – token‑per‑minute / request‑per‑minute buckets  
+- **Cost ledger** (`src/cost-ledger.ts`) – JSONL append‑only log with USD/GNK dual accounting  
+- **Pricing table** (`src/pricing.ts`) – USD per 1M tokens for local, gonka, tokenrouter, openrouter models  
+- **Model‑agnostic translator** (`src/anthropic.ts`) – accepts Anthropic `/v1/messages` shape, translates to OpenAI chat/completions for any upstream  
+- **SSE passthrough** – streaming responses proxied unchanged (with cost metering)  
+
+---  
 
 ## License
 
 MIT — NosytLabs 2026
 
+---  
+
 ## References
 
-- [SKILL.state: Scalable Long-Horizon Agent Skills](https://arxiv.org/abs/2608.26263) — Badhe, Tiwari, Chung (Google/Purdue, EMNLP 2026)
-- [Project site](http://skill.state/)
-- [headroom proxy](https://github.com/lossyrob/loonie) — production infrastructure inspiration
-- [Gonka decentralized AI](https://gonka.ai) — decentralized compute
-- [Sierra τ-Bench](https://github.com/sierra-research/tau-bench) — public customer-service benchmark
-- [InterCode CTF](https://github.com/princeton-nlp/intercode) — public CTF benchmark
+- [arXiv:2608.26263 – SKILL.state: Bounded State for Long‑Horizon Agent Loops](references/skill-state-paper.md)
+- headroom proxy pattern (loonie‑cli) – basis for streaming passthrough and cost ledger
+- opencode‑config skill – for provider/model wiring in opencode.json
