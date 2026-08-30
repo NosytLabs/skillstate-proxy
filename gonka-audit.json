@@ -1,0 +1,24 @@
+{
+  "listenPort": 8791,
+  "upstreams": [
+    {
+      "name": "gonka-openbroker",
+      "url": "https://api.openbroker.gonka.gg/v1",
+      "apiKey": "obk-cc51b17a827fbd72254c0ff24234a88a3acf0118851fcbf3",
+      "priority": 0
+    }
+  ],
+  "defaultModel": "deepseek-ai/DeepSeek-V4-Flash-0731",
+  "stateDir": "/Users/tyson/.skillstate/gonka-audit/state",
+  "schema": ["step", "files_checked", "files_total", "issues_found", "current_file", "last_finding"],
+  "initialState": {
+    "step": 0,
+    "files_checked": [],
+    "files_total": 0,
+    "issues_found": [],
+    "current_file": "",
+    "last_finding": ""
+  },
+  "discardReasoning": true,
+  "costLedgerPath": "/Users/tyson/.skillstate/gonka-audit/spend.jsonl"
+}
