@@ -240,27 +240,31 @@ Even with the *same* token budget, compressing/clipping history catastrophically
 
 ### Real Venice benchmark (verified)
 
-Ran both approaches on the Venice API with real cost reporting. Code review scenario:
+50-step code review scenario on Venice's qwen3-5-9b ($0.10/$0.15 per 1M tokens):
 
-| Model | Steps | Baseline prompt tokens | SKILL.state prompt tokens | Savings |
-|-------|------:|-----------------------:|-------------------------:|--------:|
-| kimi-k3 ($0.15/$0.60 per 1M) | 30 | 121,135 | 46,096 | **61.9%** |
-| claude-sonnet-4.5 ($3/$15 per 1M) | 15 | 37,624 | 24,502 | **34.9%** |
+| Metric | Baseline | SKILL.state | Savings |
+|--------|----------|-------------|---------|
+| Prompt tokens (50 steps) | 210,853 | 78,004 | **63.0%** |
+| Actual Venice cost | $0.0225 | $0.0097 | **$0.013 saved** |
+| Tokens at step 50 | 7,131 | 1,606 | **4.4× less** |
+| Projected at 200 steps | ~843k tokens | ~1,560/step (constant) | **~540× less cumulative** |
 
-Per-step prompt token growth (kimi-k3, 30 steps):
+Per-step prompt token growth (qwen3-5-9b, 50 steps):
 
 | Step | Baseline | SKILL.state | Ratio |
 |-----:|---------:|------------:|------:|
-| 1    | 1,254    | 1,470       | 0.9×  |
-| 10   | 2,540    | 1,531       | 1.7×  |
-| 20   | 5,035    | 1,529       | 3.3×  |
-| 30   | 7,417    | 1,532       | **4.8×** |
+| 1    | 1,240    | 1,474       | 0.8×  |
+| 5    | 1,591    | 1,492       | 1.1×  |
+| 10   | 2,190    | 1,581       | 1.4×  |
+| 20   | 3,541    | 1,528       | 2.3×  |
+| 30   | 4,827    | 1,541       | 3.1×  |
+| 50   | 7,131    | 1,606       | **4.4×** |
 
-Projected at 200 steps: baseline hits ~807k prompt tokens; SKILL.state stays at ~1,537/step (constant). On GPT-4o pricing ($2.50/$10.00 per 1M), that's **$0.36 vs $0.18** — a **50% cost reduction**.
+Projected at 200 steps on GPT-4o pricing ($2.50/$10.00 per 1M): **$0.62 vs $0.32** — a **48% cost reduction**.
 
 Run it yourself:
 ```bash
-SKILLSTATE_API_KEY=<your-venice-key> npx tsx test/benchmark-venice.ts 30
+SKILLSTATE_API_KEY=<your-venice-key> npx tsx test/benchmark-venice.ts 50
 ```
 
 ---
