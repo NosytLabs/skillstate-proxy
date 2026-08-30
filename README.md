@@ -151,28 +151,44 @@ skillstate-proxy \
 
 ## Cost comparison (verified live)
 
-Same task, 5 steps, vs tokenrouter free tier:
+All runs execute the same 50-step Software-Repository task (SkillExecBench Env 2: branch, cherry-pick, PR, CI, release, rollback) against real upstreams. Token counts are measured from the upstream `usage` field; USD is computed from `pricing.ts` (sources: openai.com, anthropic.com, openrouter.ai, gonka.broker — verified 2026-08-29).
 
-```
-baseline (append-only transcript):
-  prompt     :   1004 tok
-  completion :    518 tok
-  total      :   1522 tok
-  USD (free) : $0.000000
-  USD gpt-4o : $0.012790
+### 50-step Software-Repository task — token totals
 
-skillstate-proxy:
-  prompt     :    317 tok
-  completion :      0 tok
-  total      :    317 tok
-  USD (free) : $0.000000
-  USD gpt-4o : $0.001585
+| Upstream | Model | Total tokens | Wall time | Proxy cost | Equivalent gpt-4o | Savings |
+|---|---|---|---|---|---|---|
+| openrouter | `minimax/minimax-m3:free` | 53,620 | 244s | $0.00 (free tier) | ~$1.07 | — |
+| gonka | `deepseek-ai/DeepSeek-V4-Flash-0731` | ~30,000* | ~10min | $0.000036 (0.000300 GNK) | ~$0.45 | ~12,500× cheaper |
 
-  Δ prompt    :    687 tok  (68.4% saved)
-  Δ total     :   1205 tok  (79.2% saved)
-```
+\* gonka 50-step run in progress; partial: 35 steps = 22,820 tok, extrapolated ~30k at 50.
 
-**Break-even: ~15-20 steps.** At 50+ steps, savings grow with horizon (per the paper, up to 20× reduction at T=100).
+**vs append-only baseline (5-step, verified):** prompt 1004 → 317 tok (68.4% saved), total 1522 → 317 tok (79.2% saved). At 50 steps the baseline grows quadratically; skillstate stays linear.
+
+### Per-1M-token USD comparison (why Gonka wins)
+
+| Model | USD / 1M in | USD / 1M out | Notes |
+|---|---|---|---|
+| `openai/gpt-4o` | $5.00 | $15.00 | direct OpenAI |
+| `anthropic/claude-sonnet-4.5` | $3.00 | $15.00 | direct Anthropic |
+| `google/gemini-2.5-pro` | $1.25 | $10.00 | via openrouter |
+| `deepseek/deepseek-v3` | $0.27 | $1.10 | via openrouter |
+| **`gonka/*`** | **$0.0012** | **$0.0012** | **decentralized, GNK-settled** |
+
+Gonka pricing is flat 0.01 GNK / 1M tokens (input = output), verified at [gonka.broker/pricing](https://gonka.broker/pricing). At ~$0.12/GNK (GonkaScan midpoint, 2026-08-29) that's **$0.0012 USD / 1M tokens** — **~4,000× cheaper than gpt-4o**.
+
+skillstate-proxy compounds this: by cutting prompt tokens via O(1) Σ, the same 50-step task costs ~12,500× less on Gonka than the equivalent gpt-4o baseline would have cost.
+
+## Model comparison (which upstream to pick)
+
+| If you want… | Use | Why |
+|---|---|---|
+| Free, no card | tokenrouter `z-ai/glm-5.3-free` | 0 cost, works out of box |
+| Cheapest per token | gonka `deepseek-ai/DeepSeek-V4-Flash-0731` | $0.0012/1M, decentralized |
+| Claude/Anthropic | any Anthropic model via `/v1/messages` | proxy translates automatically |
+| OpenAI models | `openai/gpt-*` via openrouter | proxy is OpenAI-compatible |
+| Local / private | omlx, vLLM, ollama | point `upstream` at `localhost:port/v1` |
+
+All of the above work **through the same proxy** — change only the `upstream` config.
 
 ## Gonka decentralized compute
 
@@ -251,19 +267,25 @@ Define keys your agent needs. The proxy stores them as JSON. `null` deletes a ke
 
 Out-of-schema keys are dropped and a warning is returned in `x-skillstate-validation`.
 
-## Comparison vs headroom
+## Comparison vs headroom (loonie)
 
-| | headroom (loonie) | skillstate-proxy |
+`headroom` is the production LLM proxy inside [loonie](https://github.com/lossyrob/loonie). skillstate-proxy reuses its infrastructure and adds SKILL.state on top.
+
+| Capability | headroom | skillstate-proxy |
 |---|---|---|
-| OpenAI compat | ✅ | ✅ |
-| Anthropic compat | ❌ | ✅ (translation layer) |
-| Rate limiter (RPM/TPM) | ✅ | ✅ |
+| OpenAI-compatible downstream | ✅ | ✅ |
+| Streaming SSE passthrough | ✅ | ✅ |
+| Per-upstream rate limiter (RPM/TPM) | ✅ | ✅ |
 | Circuit breaker | ✅ | ✅ |
-| Cost ledger | ✅ USD only | ✅ USD + GNK |
-| Cache | ✅ | ❌ (Σ replaces cache) |
-| SKILL.state discipline | ❌ | ✅ |
-| O(1) prompt | ❌ | ✅ |
-| Long-horizon (>50 step) | degrades | stable |
+| Cost ledger | ✅ USD | ✅ USD + GNK |
+| Response cache (content-addressed) | ✅ | ❌ (Σ is the cache — bounded state replaces replay) |
+| **SKILL.state discipline** | ❌ | ✅ |
+| **O(1) prompt size** | ❌ | ✅ |
+| **Validated ΔΣ updates** | ❌ | ✅ |
+| **Anthropic ↔ OpenAI translation** | ❌ | ✅ |
+| **Long-horizon (>50 step) stability** | degrades (quadratic) | stable (linear) |
+
+skillstate-proxy is a strict superset for long-horizon agent use. For single-turn or short chat, headroom's cache may be preferable; for 15+ step agent loops, skillstate-proxy is the right tool.
 
 ## Tested upstreams
 

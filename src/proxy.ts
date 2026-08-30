@@ -102,7 +102,11 @@ function rewriteBody(body: any, session: StateSession): { body: any; observation
   const obsMsg = [...messages].reverse().find((m) => m.role !== "system");
   const observation: string = typeof obsMsg?.content === "string" ? obsMsg.content : JSON.stringify(obsMsg?.content ?? "");
   const { system, user } = buildStepPrompt(session, observation);
-  return { body: { ...body, messages: [{ role: "system", content: system }, { role: "user", content: user }] }, observation };
+  // Strip any top-level `system` field (Anthropic sends it separately); we've
+  // folded it into messages[0]. Some upstreams (Gonka vLLM) reject top-level
+  // `system`, so we must not leak it.
+  const { system: _drop, ...rest } = body;
+  return { body: { ...rest, messages: [{ role: "system", content: system }, { role: "user", content: user }] }, observation };
 }
 
 function tryParseContent(sse: string): { content: string; inTok: number; outTok: number } {

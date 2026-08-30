@@ -14,13 +14,18 @@ export type NormalizedRequest = {
 };
 
 export function normalizeIncoming(url: string, body: any): NormalizedRequest | null {
-  const isAnthropic = url.includes("/v1/messages") || body?.messages?.[0]?.content?.[0]?.type === "text";
-  // Detect Anthropic shape: {model, messages:[{role, content:string|array}], max_tokens, system?}
-  if (isAnthropic && body?.messages && !body?.model?.includes("/") && body?.messages[0]?.role) {
-    // could still be OpenAI — disambiguate by checking for anthropic system field or content array
-    const hasAnthropicSystem = typeof body.system === "string";
-    const hasContentArray = Array.isArray(body.messages[0]?.content);
-    if (hasAnthropicSystem || hasContentArray) {
+  // Strongest signal: Anthropic sends `content` as an array of blocks OR a top-level `system` field.
+  // OpenAI sends `content` as a string and no top-level `system` (system is a message).
+  const firstContent = body?.messages?.[0]?.content;
+  const hasContentArray = Array.isArray(firstContent);
+  const hasAnthropicSystem = typeof body?.system === "string" && Array.isArray(body?.messages?.[0]?.content);
+  const isAnthropicPath = url.includes("/v1/messages");
+
+  if ((hasContentArray || hasAnthropicSystem || isAnthropicPath) && body?.messages && body?.model) {
+    // disambiguate: if content is string and no system field, it's likely OpenAI — but /v1/messages path wins
+    if (!hasContentArray && !hasAnthropicSystem && !isAnthropicPath) {
+      // ambiguous, treat as openai below
+    } else {
       return anthropicToOpenAI(body);
     }
   }
