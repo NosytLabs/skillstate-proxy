@@ -197,3 +197,14 @@ authoring is manual (learned schemas are future work).
 - [x] Streaming passthrough with cost metering
 - [x] Multi-upstream failover + circuit breaker + rate limiter
 - [x] Anthropic ↔ OpenAI wire translation
+
+## 8. Related work
+
+- **SkillGate** (arXiv:2608.18852) — trains in-policy skill selection for long-horizon agents; complementary to SKILL.state's runtime architecture.
+- **LatentSkill** (arXiv:2606.06087) — converts textual skills to LoRA adapters via hypernetwork; reduces per-step skill tokens in a different way (weight-space vs context-space).
+- **SkillSmith** (arXiv:2605.15215) — compiles skill packages into boundary-guided runtime interfaces; orthogonal to state management.
+- **Recuris** (arXiv:2608.24876) — recursive experiential-working-memory architecture for long-horizon agent harnesses; shares the "growing history is the problem" insight.
+- **SWE-TRACE** (arXiv:2604.14820) — optimizes long-horizon SWE agents via rubric process rewards; complementary approach to reducing token bloat.
+- **SkillCraft** (arXiv:2603.00718) — benchmarks agent ability to form and reuse tool compositions as skills.
+- **SIRI** (arXiv:2606.02355) — self-internalizing RL with intrinsic skills; no external skill generators needed.
+- **Context compression for terminal agents** (arXiv:2604.19572) — observational context compression for long-horizon terminal workflows; similar token-reduction motivation.

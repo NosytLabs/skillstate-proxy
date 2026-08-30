@@ -8,8 +8,6 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
 
-**Keywords:** LLM token savings · reduce LLM costs · agent context management · long-horizon agent tasks · prompt compression · context window optimization · structured agent state · AI cost reduction · autonomous agents · OpenAI proxy · Anthropic proxy · model-agnostic LLM proxy
-
 ```
 client ──► skillstate-proxy ──► any upstream (OpenAI · Anthropic · Venice · OpenRouter · vLLM · Ollama · ...)
                │
@@ -99,7 +97,10 @@ The longer your agent runs, the more you save. At 500 steps: ~750k tokens vs ~13
 ## Quickstart
 
 ```bash
-# install
+# option A — install globally
+npm install -g skillstate-proxy
+
+# option B — clone + build from source
 git clone https://github.com/NosytLabs/skillstate-proxy.git
 cd skillstate-proxy
 npm install && npm run build
@@ -107,7 +108,7 @@ npm install && npm run build
 # start — point at any OpenAI-compatible endpoint
 SKILLSTATE_UPSTREAM=https://api.openai.com/v1 \
 SKILLSTATE_API_KEY=your-key \
-npm start
+skillstate            # or: npm start
 
 # call it — works like any OpenAI client
 curl http://127.0.0.1:8789/v1/chat/completions \
@@ -230,6 +231,10 @@ Each step t:
 **Complexity:** O(1) per-step prompt (state + observation only) and O(T) cumulative tokens, vs O(T²) for append-only transcript runtimes.
 
 **Faithful to the paper:** state is serialized compact (no whitespace), presented as a fenced `json` block labeled `Skill Execution State:`, and the model's reasoning is explicitly discarded after each validated update — exactly the Appendix A.4 runtime template.
+
+### Streaming
+
+Streaming requests (`"stream": true`) are fully supported. The proxy buffers the SSE response, extracts state from the accumulated content, then forwards the original SSE stream to the client unchanged. State is updated server-side; the client sees normal streaming behavior.
 
 ---
 
@@ -355,6 +360,39 @@ Offline tests need no API key. Live tests run only with `SKILLSTATE_LIVE=1` and 
 - [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat)
 - [Anthropic Messages API](https://docs.anthropic.com/en/api/messages)
 - [Venice API](https://venice.ai)
+
+---
+
+## Contributing
+
+Contributions welcome. The codebase is TypeScript (ESM, zero runtime deps). To get started:
+
+```bash
+git clone https://github.com/NosytLabs/skillstate-proxy.git
+cd skillstate-proxy
+npm install && npm run build && npm test
+```
+
+All changes should include tests. Run `npm test` before pushing. CI runs on every push (Node 20 + 22, ubuntu-latest).
+
+---
+
+## Troubleshooting
+
+**"No route to upstream" / connection refused**
+→ Check `SKILLSTATE_UPSTREAM` is set and the upstream is reachable. The proxy binds to `127.0.0.1` only.
+
+**Model doesn't emit `state_patch`**
+→ The proxy automatically retries up to `maxRetries` (default 2) with a correction prompt. If it still fails, the response is forwarded as-is and Σ stays unchanged. Check `x-skillstate-validation` header for warnings.
+
+**Session state looks wrong**
+→ `GET /state` to inspect. `DELETE /state?session=<sid>` to reset. Sessions also auto-expire after `sessionTtlMs` (default 24h).
+
+**CORS errors in browser**
+→ The proxy sends `access-control-allow-origin: *` by default. Set `"cors": false` in config to disable.
+
+**413 Request Entity Too Large**
+→ Body exceeds `maxBodyBytes` (default 1MB). Increase in config or send smaller payloads.
 
 ---
 

@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export interface CostRow {
   ts: string;
@@ -25,7 +25,7 @@ export class CostLedger {
 
   constructor(path: string) {
     this.path = path;
-    mkdirSync(join(path, ".."), { recursive: true });
+    mkdirSync(dirname(this.path), { recursive: true });
     if (!existsSync(path)) writeFileSync(path, "", "utf-8");
   }
 
