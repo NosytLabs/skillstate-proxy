@@ -8,14 +8,7 @@
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
 
-```
-client ──► skillstate-proxy ──► any upstream (OpenAI · Anthropic · Venice · OpenRouter · vLLM · Ollama · ...)
-               │
-               ├─ keeps a small structured state Σ per session (JSON, on disk)
-               ├─ rewrites every request to (P, Σ, O) — spec + state + latest observation
-               ├─ extracts state_patch ΔΣ + action from each model reply, merges Σ ← Σ ⊕ ΔΣ
-               └─ discards reasoning after validated update — never re-sent
-```
+**Keywords:** LLM token savings, prompt compression, reduce LLM costs, long-horizon agent, context management, token efficiency, agent proxy, structured state, SKILL.state, OpenAI proxy, Anthropic proxy, model-agnostic, cost optimization, AI cost reduction
 
 ---
 
@@ -26,9 +19,18 @@ A local HTTP proxy that sits between your LLM agent and any OpenAI-compatible AP
 1. **Replaces growing conversation history** with a small, fixed-size structured state
 2. **Cuts prompt tokens 60-95%** on long-horizon tasks (50+ steps) — real money saved on per-token APIs
 3. **Improves accuracy** by removing stale, noisy context (0.94 vs 0.74 at 200 steps)
-4. **Works with any model** — OpenAI, Anthropic, Venice, OpenRouter, vLLM, Ollama, and any OpenAI-compatible endpoint
+4. **Works with any model** — OpenAI, Anthropic, Venice, OpenRouter, vLLM, Ollama, Gonka, and any OpenAI-compatible endpoint
 
 If your agent runs longer than ~15 steps, this saves you money and keeps it accurate.
+
+```
+client ──► skillstate-proxy ──► any upstream (OpenAI · Anthropic · Venice · OpenRouter · vLLM · Ollama · Gonka · ...)
+               │
+               ├─ keeps a small structured state Σ per session (JSON, on disk)
+               ├─ rewrites every request to (P, Σ, O) — spec + state + latest observation
+               ├─ extracts state_patch ΔΣ + action from each model reply, merges Σ ← Σ ⊕ ΔΣ
+               └─ discards reasoning after validated update — never re-sent
+```
 
 ---
 
@@ -42,7 +44,25 @@ Most AIs work by writing down **everything** that ever happened — every step, 
 
 **Cons / trade-offs:** You define a tiny schema of which facts matter (once, per domain), and the model must reply in a structured JSON shape. Small models sometimes struggle with the format — the proxy retries them automatically (rollback-retry).
 
-**Who it's for:** Anyone running LLM agents for 15+ steps — coding assistants, research agents, task planners, support bots, autonomous workflows. The longer the task, the bigger the savings.
+---
+
+## Features
+
+| Feature | Description |
+|---|---|
+| **Token savings** | 60-95% reduction in prompt tokens for long-horizon tasks |
+| **Accuracy boost** | 0.94 vs 0.74 at 200 steps — stale context hurts |
+| **Model-agnostic** | Works with OpenAI, Anthropic, Venice, OpenRouter, vLLM, Ollama, Gonka, any OpenAI-compatible API |
+| **Zero runtime deps** | Pure Node.js stdlib — no npm install bloat |
+| **Drop-in proxy** | Just point your existing OpenAI/Anthropic client at it |
+| **Streaming support** | Full SSE streaming passthrough |
+| **Anthropic translation** | Auto-translates `/v1/messages` to OpenAI format and back |
+| **Multi-upstream failover** | Route by priority with circuit breaker + rate limiter |
+| **Session persistence** | State saved to disk, survives restarts |
+| **Cost tracking** | JSONL ledger with 24h summaries, USD + GNK support |
+| **Rollback-retry** | Auto-corrects when model fails to emit structured output |
+| **Schema enforcement** | Drops out-of-schema keys, prevents state bloat |
+| **CORS enabled** | Works from browser-based agents |
 
 ---
 
@@ -76,7 +96,7 @@ SKILLSTATE_API_KEY=your-key npx tsx test/benchmark.ts 50
 | **Prompt at step 50** | ~9,700 tokens (growing) | ~1,500 tokens (constant) |
 | **Total tokens (50 steps)** | ~275k | ~76k (**72% less**) |
 | **Accuracy at T=200** | 0.74 | **0.94** |
-| **State recovery after environment drift** | 5-8 turns hallucinating | **0 steps** (Σ on disk) |
+| **State recovery after drift** | 5-8 turns hallucinating | **0 steps** (Σ on disk) |
 | **Noise robustness (50 distractors/turn)** | Degrades to 0.53 | Stays **0.98** |
 
 The longer your agent runs, the more you save. At 500 steps: ~750k tokens vs ~13M baseline — a **17x reduction**.
@@ -85,32 +105,57 @@ The longer your agent runs, the more you save. At 500 steps: ~750k tokens vs ~13
 
 ## Use cases
 
-- **Long-horizon autonomous agents** — coding assistants, research agents, and planners running 50-200+ steps. The longer the task, the bigger the savings.
-- **Customer support & conversational agents** — maintain a compact case file instead of replaying the whole chat every turn.
-- **Cost-sensitive deployments** — pay per token on OpenAI/Anthropic/Venice? Cutting prompt tokens 60-95% cuts the bill directly.
-- **Multi-agent systems** — each agent gets its own bounded state, preventing cross-agent context pollution.
-- **Local models (vLLM, Ollama, llama.cpp)** — smaller prompts mean faster inference, less VRAM, longer tasks on the same hardware.
-- **Decentralized compute (Gonka)** — run agents on [gonka.ai](https://gonka.ai)'s decentralized GPU network; its already-low pricing compounds with SKILL.state's token cuts.
+### Long-horizon autonomous agents
+Coding assistants, research agents, and task planners running 50-200+ steps. The longer the task, the bigger the savings. A 200-step coding agent drops from 2.6M tokens to 122k — **21x reduction**.
+
+### Customer support & conversational agents
+Maintain a compact case file instead of replaying the whole chat every turn. Session state captures the customer's issue, progress, and flags without transcript bloat.
+
+### Cost-sensitive deployments
+Pay per token on OpenAI/Anthropic/Venice? Cutting prompt tokens 60-95% cuts the bill directly. A 50-step task that costs $0.81 on GPT-4o drops to $0.33.
+
+### Multi-agent systems
+Each agent gets its own bounded state, preventing cross-agent context pollution. No shared transcript leakage.
+
+### Local models (vLLM, Ollama, llama.cpp)
+Smaller prompts mean faster inference, less VRAM, and longer tasks on the same hardware. A 1,600-token prompt fits in any context window.
+
+### Decentralized compute (Gonka)
+Run agents on [gonka.ai](https://gonka.ai)'s decentralized GPU network. Its already-low pricing compounds with SKILL.state's token cuts — the two savings multiply.
+
+### Research & evaluation
+Reproduce SKILL.state benchmarks on your own tasks. The proxy implements the exact runtime from the paper (arXiv:2608.26263).
 
 ---
 
 ## Quickstart
 
-```bash
-# option A — install globally
-npm install -g skillstate-proxy
+### Option A: Install globally
 
-# option B — clone + build from source
+```bash
+npm install -g skillstate-proxy
+```
+
+### Option B: Clone + build from source
+
+```bash
 git clone https://github.com/NosytLabs/skillstate-proxy.git
 cd skillstate-proxy
 npm install && npm run build
+```
 
-# start — point at any OpenAI-compatible endpoint
+### Start the proxy
+
+```bash
+# Point at any OpenAI-compatible endpoint
 SKILLSTATE_UPSTREAM=https://api.openai.com/v1 \
 SKILLSTATE_API_KEY=your-key \
 skillstate            # or: npm start
+```
 
-# call it — works like any OpenAI client
+### Call it like any OpenAI client
+
+```bash
 curl http://127.0.0.1:8789/v1/chat/completions \
   -H 'content-type: application/json' \
   -d '{"model":"gpt-4o","messages":[{"role":"system","content":"TASK: track state"},{"role":"user","content":"go"}]}'
@@ -118,7 +163,18 @@ curl http://127.0.0.1:8789/v1/chat/completions \
 
 Responses include SKILL.state headers (`x-skillstate-session`, `x-skillstate-step`, `x-skillstate-cost-usd`). Send the session header back to continue a conversation. Without the header, the proxy derives a deterministic session from (system prompt + model), so even zero-config clients get state continuity.
 
-### Inspect & manage state
+### CLI options
+
+```bash
+skillstate --help          # full usage
+skillstate --version       # print version
+skillstate --port 9000     # custom port
+skillstate --config ./my-config.json  # config file
+```
+
+---
+
+## Inspect & manage state
 
 ```bash
 curl http://127.0.0.1:8789/state                          # list sessions
@@ -126,6 +182,7 @@ curl http://127.0.0.1:8789/state?session=<sid>            # view Σ for one sess
 curl -X DELETE http://127.0.0.1:8789/state?session=<sid>  # reset a session
 curl http://127.0.0.1:8789/cost                           # 24h spend summary
 curl http://127.0.0.1:8789/health                         # upstream circuit status
+curl http://127.0.0.1:8789/v1/models                      # list upstream models
 ```
 
 ---
@@ -158,11 +215,18 @@ curl http://127.0.0.1:8789/health                         # upstream circuit sta
   "maxBodyBytes": 1048576,
   "sessionTtlMs": 86400000,
   "cors": true,
-  "circuitBreaker": { "failureThreshold":  5, "openCooldownMs": 30000 }
+  "circuitBreaker": { "failureThreshold": 5, "openCooldownMs": 30000 }
 }
 ```
 
 Multi-upstream failover is built in — requests route by priority with a circuit breaker + rate limiter per upstream.
+
+### Config priority
+
+1. CLI flags (highest)
+2. Environment variables
+3. Config file (`skillstate.json` or `--config` path)
+4. Defaults (lowest)
 
 ---
 
@@ -293,7 +357,6 @@ The paper is explicit about where the approach loses:
 - **No fixed schema in advance** — if the state structure must be discovered during execution, structured state is weaker than a transcript.
 - **Deferred-relevance observations** — if a step depends on something observed earlier whose importance wasn't recognized at the time (and thus never committed to Σ), it's gone.
 - **Trajectory-defined objectives** — auditing, provenance, "explain what you did" tasks where the history *is* the output.
-- **Small models + JSON** — weak models fail on output format, not reasoning (68% of failures are overwrite-instead-of-merge, 20% type confusion, 12% syntax). The proxy's rollback-retry and schema enforcement mitigate this, but constrained decoding is the paper's recommended fix.
 
 Single-agent only — multi-agent would need deterministic conflict resolution in the merge operator for concurrent writes.
 
@@ -308,6 +371,7 @@ Single-agent only — multi-agent would need deterministic conflict resolution i
 | **Venice** | qwen3-5-9b, kimi-k3, llama variants | $0.10-$0.30/1M |
 | **OpenRouter** | 100+ models | varies |
 | **Local** | vLLM, Ollama, llama.cpp | free |
+| **Gonka** | Any model on the network | ~$0.0012/1M GNK |
 
 Works with **any** OpenAI-compatible endpoint — just set `SKILLSTATE_UPSTREAM`. No code changes in your client.
 
@@ -329,7 +393,7 @@ src/
   circuit-breaker.ts  Per-upstream circuit breaker (configurable)
   rate-limiter.ts     Per-upstream rate limiter
   token-estimate.ts   Token count estimator
-  cli.ts              CLI entry point (graceful shutdown)
+  cli.ts              CLI entry point (--help, --version, config validation)
   index.ts            Public API barrel
 test/
   state.test.ts       18 unit tests (merge, extraction, validation, prompt)
@@ -360,6 +424,8 @@ Offline tests need no API key. Live tests run only with `SKILLSTATE_LIVE=1` and 
 - [OpenAI Chat Completions API](https://platform.openai.com/docs/api-reference/chat)
 - [Anthropic Messages API](https://docs.anthropic.com/en/api/messages)
 - [Venice API](https://venice.ai)
+- [Gonka — Decentralized AI Compute](https://gonka.ai)
+- [OpenRouter — 100+ Models](https://openrouter.ai)
 
 ---
 
@@ -393,6 +459,9 @@ All changes should include tests. Run `npm test` before pushing. CI runs on ever
 
 **413 Request Entity Too Large**
 → Body exceeds `maxBodyBytes` (default 1MB). Increase in config or send smaller payloads.
+
+**Unknown CLI option**
+→ Run with `--help` for the full list of options and examples.
 
 ---
 

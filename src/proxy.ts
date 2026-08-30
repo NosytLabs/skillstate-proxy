@@ -48,6 +48,8 @@ export interface ProxyConfig {
   cors?: boolean;
   /** Circuit breaker config (threshold + cooldown). */
   circuitBreaker?: CircuitBreakerConfig;
+  /** Enable verbose request logging (default false). */
+  verbose?: boolean;
 }
 
 export const DEFAULT_CONFIG: ProxyConfig = {
@@ -281,6 +283,11 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
           res.end();
           return;
         }
+      }
+
+      if (config.verbose) {
+        const ts = new Date().toISOString();
+        console.log(`[${ts}] ${req.method} ${req.url} from ${req.socket.remoteAddress}`);
       }
 
       const isChat =
@@ -523,6 +530,10 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
           const usd = costFor(body.model ?? modelRawJson.model ?? "", inputTokens, outputTokens);
           const gnk = u.currency === "gnk" ? gonkaCost(inputTokens + outputTokens).gnk : undefined;
           ledger.record({ ts: new Date().toISOString(), upstream: u.name, model: body.model ?? modelRawJson.model ?? "", inputTokens, outputTokens, costUsd: usd, costGnk: gnk });
+
+          if (config.verbose) {
+            console.log(`[${new Date().toISOString()}] ${sid} step=${session.step} model=${body.model ?? modelRawJson.model} in=${inputTokens} out=${outputTokens} cost=$${usd.toFixed(6)}${retriesUsed > 0 ? ` retries=${retriesUsed}` : ""}`);
+          }
 
           let outJson = modelRawJson;
           if (isAnthropic && normalized) outJson = denormalizeResponse(normalized, modelRawJson);
