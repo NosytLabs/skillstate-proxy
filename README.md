@@ -4,11 +4,9 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2608.26263-b31b1b.svg)](https://arxiv.org/abs/2608.26263)
 [![EMNLP 2026](https://img.shields.io/badge/EMNLP-2026-2c7be5.svg)](https://arxiv.org/abs/2608.26263)
-[![Tests](https://img.shields.io/badge/tests-25%2F25%20passing-brightgreen.svg)](#tests)
+[![Tests](https://img.shields.io/badge/tests-23%2F23%20passing-brightgreen.svg)](#tests)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
-
-**Keywords:** LLM token savings, prompt compression, reduce LLM costs, long-horizon agent, context management, token efficiency, agent proxy, structured state, SKILL.state, OpenAI proxy, Anthropic proxy, model-agnostic, cost optimization, AI cost reduction
 
 ---
 
@@ -42,7 +40,7 @@ Most AIs work by writing down **everything** that ever happened — every step, 
 
 **Benefits:** 60-95% fewer tokens → lower bills, faster responses, and the AI stays accurate because it isn't distracted by stale notes.
 
-**Cons / trade-offs:** You define a tiny schema of which facts matter (once, per domain), and the model must reply in a structured JSON shape. Small models sometimes struggle with the format — the proxy retries them automatically (rollback-retry).
+**Trade-offs:** You define a tiny schema of which facts matter (once, per domain), and the model must reply in a structured JSON shape. Small models sometimes struggle with the format — the proxy retries them automatically (rollback-retry).
 
 ---
 
@@ -87,17 +85,14 @@ Run it yourself on any provider:
 SKILLSTATE_API_KEY=your-key npx tsx test/benchmark.ts 50
 ```
 
----
+### Accuracy & robustness (paper benchmarks)
 
-## Why use it
-
-| | Without SKILL.state | With SKILL.state |
+| Metric | Without SKILL.state | With SKILL.state |
 |---|---|---|
-| **Prompt at step 50** | ~9,700 tokens (growing) | ~1,500 tokens (constant) |
-| **Total tokens (50 steps)** | ~275k | ~76k (**72% less**) |
 | **Accuracy at T=200** | 0.74 | **0.94** |
 | **State recovery after drift** | 5-8 turns hallucinating | **0 steps** (Σ on disk) |
-| **Noise robustness (50 distractors/turn)** | Degrades to 0.53 | Stays **0.98** |
+| **Noise (50 distractors/turn)** | Degrades to 0.53 | Stays **0.98** |
+| **Total tokens (50 steps)** | ~275k | ~76k (**72% less**) |
 
 The longer your agent runs, the more you save. At 500 steps: ~750k tokens vs ~13M baseline — a **17x reduction**.
 
@@ -169,6 +164,7 @@ Responses include SKILL.state headers (`x-skillstate-session`, `x-skillstate-ste
 skillstate --help          # full usage
 skillstate --version       # print version
 skillstate --port 9000     # custom port
+skillstate --verbose       # log every request
 skillstate --config ./my-config.json  # config file
 ```
 
@@ -199,8 +195,11 @@ curl http://127.0.0.1:8789/v1/models                      # list upstream models
 | `SKILLSTATE_SCHEMA` | — | Comma-separated state keys (e.g. `step,notes,flags`) |
 | `SKILLSTATE_INITIAL_STATE` | `{}` | JSON string of initial state |
 | `SKILLSTATE_CONFIG` | — | Path to a JSON config file |
+| `SKILLSTATE_VERBOSE` | — | Set to `1` for request logging |
 
 ### Config file (`skillstate.json`)
+
+The proxy auto-discovers `skillstate.json` in the current directory. Or pass `--config path/to/config.json`.
 
 ```json
 {
@@ -258,14 +257,6 @@ const r = await c.chat.completions.create({
 ### Anthropic clients
 
 The proxy auto-translates `/v1/messages` to OpenAI format and back. Point your Anthropic SDK's `base_url` at `http://127.0.0.1:8789`.
-
-### curl
-
-```bash
-curl http://127.0.0.1:8789/v1/chat/completions \
-  -H 'content-type: application/json' \
-  -d '{"model":"gpt-4o","messages":[{"role":"system","content":"TASK: track state"},{"role":"user","content":"go"}]}'
-```
 
 ---
 
@@ -352,11 +343,9 @@ On τ-Bench Airline, baseline prompts peak above 11,000 tokens/step on dense dat
 
 ### When *not* to use it (paper §7)
 
-The paper is explicit about where the approach loses:
-
-- **No fixed schema in advance** — if the state structure must be discovered during execution, structured state is weaker than a transcript.
-- **Deferred-relevance observations** — if a step depends on something observed earlier whose importance wasn't recognized at the time (and thus never committed to Σ), it's gone.
-- **Trajectory-defined objectives** — auditing, provenance, "explain what you did" tasks where the history *is* the output.
+- **No fixed schema in advance** — state structure must be discovered during execution
+- **Deferred-relevance observations** — earlier observation's importance wasn't recognized when first observed
+- **Trajectory-defined objectives** — auditing, provenance, "explain what you did" tasks where history *is* the output
 
 Single-agent only — multi-agent would need deterministic conflict resolution in the merge operator for concurrent writes.
 
@@ -375,9 +364,7 @@ Single-agent only — multi-agent would need deterministic conflict resolution i
 
 Works with **any** OpenAI-compatible endpoint — just set `SKILLSTATE_UPSTREAM`. No code changes in your client.
 
-### Gonka — decentralized AI compute
-
-[Gonka](https://gonka.ai) is a decentralized GPU network: instead of one company's datacenter, inference runs on a global network of hosts, settled in GNK token (~$0.12). That already makes per-token pricing extremely low (~0.01 GNK per 1M tokens — a few cents per *million* tokens). Pair it with SKILL.state and the two savings compound: Gonka cuts the price per token, SKILL.state cuts the *number* of tokens. Set `SKILLSTATE_UPSTREAM` to your Gonka gateway endpoint and optionally `"currency": "gnk"` per upstream in the config to track spend in GNK alongside USD.
+[Gonka](https://gonka.ai) is a decentralized GPU network where inference runs on a global network of hosts, settled in GNK token (~$0.12). Per-token pricing is already extremely low (~0.01 GNK per 1M tokens). Pair it with SKILL.state and the two savings compound: Gonka cuts the price per token, SKILL.state cuts the *number* of tokens.
 
 ---
 
