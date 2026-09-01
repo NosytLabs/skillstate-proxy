@@ -205,7 +205,9 @@ Responses include SKILL.state headers (`x-skillstate-session`, `x-skillstate-ste
 ```bash
 skillstate --help          # full usage
 skillstate --version       # print version
-skillstate --port 9000     # custom port
+skillstate --port 9000     # custom port (env: SKILLSTATE_PORT)
+skillstate --upstream URL  # upstream base URL (env: SKILLSTATE_UPSTREAM)
+skillstate --schema a,b    # state keys (env: SKILLSTATE_SCHEMA)
 skillstate --verbose       # log every request
 skillstate --config ./my-config.json  # config file
 ```
@@ -222,6 +224,25 @@ curl http://127.0.0.1:8789/cost                           # 24h spend summary
 curl http://127.0.0.1:8789/health                         # upstream circuit status
 curl http://127.0.0.1:8789/v1/models                      # list upstream models
 ```
+
+`/health`, `/state`, and `/cost` are also served as `/v1/health`, `/v1/state`, and `/v1/cost`. Session ids must match `[A-Za-z0-9_-]{1,128}`.
+
+## Response headers
+
+Set on rewritten chat responses (from `src/proxy.ts`):
+
+| Header | When |
+|---|---|
+| `x-skillstate-session` | Always — send it back to continue the session |
+| `x-skillstate-step` | Always |
+| `x-skillstate-statekeys` | Always — comma-separated keys currently in Σ |
+| `x-skillstate-upstream` | Always — which upstream handled the call |
+| `x-skillstate-cost-usd` | After a completed turn |
+| `x-skillstate-cost-gnk` | If the upstream is priced in GNK |
+| `x-skillstate-validation` | Warnings, pipe-separated |
+| `x-skillstate-retries` | If rollback-retry ran |
+| `x-skillstate-action` | Extracted action, truncated to 200 chars |
+
 
 ---
 

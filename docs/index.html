@@ -13,6 +13,7 @@
     <a class="mark" href="./">skillstate-proxy</a>
     <nav>
       <a href="#install">Install</a>
+      <a href="#api">API</a>
       <a href="#config">Config</a>
       <a href="https://github.com/NosytLabs/skillstate-proxy">GitHub</a>
       <a href="https://arxiv.org/abs/2608.26263">Paper</a>
@@ -70,8 +71,27 @@
     <section id="install">
       <h2>Install</h2>
       <p>The CLI binary is <code>skillstate</code>. Full install steps are in the README on GitHub.</p>
-      <p>Start with SKILLSTATE_UPSTREAM set to an OpenAI-compatible base URL and SKILLSTATE_API_KEY set to YOUR_UPSTREAM_API_KEY (placeholder). Default listen port is 8789 on 127.0.0.1. CLI flags: --port, --verbose, --config, --help.</p>
+      <p>Start with SKILLSTATE_UPSTREAM set to an OpenAI-compatible base URL and SKILLSTATE_API_KEY set to YOUR_UPSTREAM_API_KEY (placeholder). Default listen port is 8789 on 127.0.0.1. CLI flags: --port, --upstream, --schema, --verbose, --config, --help, --version.</p>
       <p>Point an OpenAI client base_url at http://127.0.0.1:8789/v1. Responses include x-skillstate-session, x-skillstate-step, and x-skillstate-cost-usd. Inspect GET /state, GET /cost, GET /health.</p>
+    </section>
+    <section id="api">
+      <h2>HTTP API</h2>
+      <p>Listens on 127.0.0.1 only. Inspect routes also exist as /v1/health, /v1/state, and /v1/cost.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Method</th><th>Path</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td>POST</td><td>/v1/chat/completions</td><td>OpenAI-compatible chat; rewrite to (P, Σ, O)</td></tr>
+            <tr><td>POST</td><td>/v1/messages</td><td>Anthropic Messages; translated to OpenAI and back</td></tr>
+            <tr><td>GET</td><td>/v1/models</td><td>Proxied to the first upstream</td></tr>
+            <tr><td>GET</td><td>/health</td><td>ok plus per-upstream circuit state</td></tr>
+            <tr><td>GET</td><td>/state</td><td>Session ids; ?session=&lt;sid&gt; returns step, schema, state</td></tr>
+            <tr><td>DELETE</td><td>/state?session=&lt;sid&gt;</td><td>Reset that session (204). Session ids: [A-Za-z0-9_-], 1–128 chars</td></tr>
+            <tr><td>GET</td><td>/cost</td><td>Spend summary for the last 24h (totalUsd, totalGnk, byModel, byUpstream)</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Chat responses set x-skillstate-session, x-skillstate-step, x-skillstate-statekeys, x-skillstate-upstream, and x-skillstate-cost-usd. Optional: x-skillstate-cost-gnk, x-skillstate-validation, x-skillstate-retries, x-skillstate-action.</p>
     </section>
     <section id="config">
       <h2>Config sketch</h2>
