@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>skillstate-proxy — token-savings proxy for long-horizon LLM agents</title>
+  <meta name="description" content="Drop-in OpenAI-compatible proxy that cuts prompt tokens 60-95% with SKILL.state structured state. MIT.">
+  <link rel="canonical" href="https://nosytlabs.github.io/skillstate-proxy/">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="top">
+    <a class="mark" href="./">skillstate-proxy</a>
+    <nav>
+      <a href="#install">Install</a>
+      <a href="#config">Config</a>
+      <a href="https://github.com/NosytLabs/skillstate-proxy">GitHub</a>
+      <a href="https://arxiv.org/abs/2608.26263">Paper</a>
+    </nav>
+  </header>
+  <main>
+    <section class="hero">
+      <p class="eyebrow">OpenAI-compatible · MIT · Node >= 20</p>
+      <h1>Cut prompt tokens 60-95% on long-horizon agents.</h1>
+      <p class="lede">A drop-in HTTP proxy between your LLM client and any OpenAI- or Anthropic-compatible API. It replaces growing conversation history with a small, fixed-size structured state — SKILL.state (arXiv:2608.26263, EMNLP 2026).</p>
+      <div class="cta">
+        <a class="btn primary" href="https://github.com/NosytLabs/skillstate-proxy">View on GitHub</a>
+        <a class="btn" href="#install">Install</a>
+      </div>
+    </section>
+    <section class="band">
+      <div class="stat"><strong>60-95%</strong><span>fewer prompt tokens on long tasks</span></div>
+      <div class="stat"><strong>0.94 vs 0.74</strong><span>accuracy at 200 steps (paper)</span></div>
+      <div class="stat"><strong>O(1)</strong><span>per-step prompt size</span></div>
+      <div class="stat"><strong>zero</strong><span>runtime package dependencies</span></div>
+    </section>
+    <section>
+      <h2>What it is</h2>
+      <p>skillstate-proxy sits in front of OpenAI, Anthropic, Venice, OpenRouter, vLLM, Ollama, Gonka, or any OpenAI-compatible upstream. Each request is rewritten to spec plus current state plus latest observation. The model returns a state_patch plus an action. The proxy merges the patch, discards reasoning, and never re-sends the full transcript.</p>
+    </section>
+    <section>
+      <h2>Why it saves money</h2>
+      <p>Append-only transcripts grow linearly. SKILL.state stays about 1,500 tokens per step. A measured 50-step run on Venice (qwen3-5-9b, 2026-08-30) used 75,606 prompt tokens vs 274,540 baseline: 72.5 percent less, 0.0097 USD vs 0.0292 USD.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Steps</th><th>Provider</th><th>Baseline</th><th>SKILL.state</th><th>Save</th></tr></thead>
+          <tbody>
+            <tr><td>50</td><td>GPT-4o (5 USD per 1M in)</td><td>0.81</td><td>0.33</td><td>59%</td></tr>
+            <tr><td>100</td><td>GPT-4o</td><td>3.20</td><td>0.65</td><td>80%</td></tr>
+            <tr><td>200</td><td>GPT-4o</td><td>13.00</td><td>1.22</td><td>91%</td></tr>
+            <tr><td>50</td><td>Claude Sonnet (3 USD per 1M in)</td><td>0.49</td><td>0.20</td><td>59%</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">Estimates from the project README. Real savings depend on provider and task length.</p>
+    </section>
+    <section>
+      <h2>What it includes</h2>
+      <ul class="grid">
+        <li><strong>Drop-in proxy</strong> — point base_url at it; OpenAI and Anthropic clients work.</li>
+        <li><strong>Streaming</strong> — SSE passthrough; state updates server-side.</li>
+        <li><strong>Anthropic translation</strong> — /v1/messages to OpenAI format and back.</li>
+        <li><strong>Failover</strong> — multi-upstream routing with circuit breaker and rate limiter.</li>
+        <li><strong>Session persistence</strong> — state on disk, survives restarts.</li>
+        <li><strong>Cost tracking</strong> — JSONL ledger, 24h summaries, USD and GNK.</li>
+        <li><strong>Rollback-retry</strong> — retries when the model misses structured output.</li>
+        <li><strong>Schema enforcement</strong> — drops out-of-schema keys so state stays small.</li>
+      </ul>
+    </section>
+    <section id="install">
+      <h2>Install</h2>
+      <p>The CLI binary is <code>skillstate</code>. Full install steps are in the README on GitHub.</p>
+      <p>Start with SKILLSTATE_UPSTREAM set to an OpenAI-compatible base URL and SKILLSTATE_API_KEY set to YOUR_UPSTREAM_API_KEY (placeholder). Default listen port is 8789 on 127.0.0.1. CLI flags: --port, --verbose, --config, --help.</p>
+      <p>Point an OpenAI client base_url at http://127.0.0.1:8789/v1. Responses include x-skillstate-session, x-skillstate-step, and x-skillstate-cost-usd. Inspect GET /state, GET /cost, GET /health.</p>
+    </section>
+    <section id="config">
+      <h2>Config sketch</h2>
+      <p>Environment: SKILLSTATE_UPSTREAM, SKILLSTATE_API_KEY, SKILLSTATE_PORT (default 8789), SKILLSTATE_SCHEMA, SKILLSTATE_INITIAL_STATE, SKILLSTATE_CONFIG, SKILLSTATE_VERBOSE.</p>
+      <p>Or a skillstate.json file. Keys shown are placeholders, not real credentials.</p>
+      <pre><code>{
+  "listenPort": 8789,
+  "upstreams": [
+    { "name": "openai", "url": "https://api.openai.com/v1", "apiKey": "YOUR_UPSTREAM_API_KEY", "priority": 0 },
+    { "name": "venice", "url": "https://api.venice.ai/api/v1", "apiKey": "YOUR_SECOND_UPSTREAM_API_KEY", "priority": 1 }
+  ],
+  "schema": ["step", "notes", "flags"],
+  "initialState": { "step": 0, "notes": [], "flags": [] },
+  "maxRetries": 2,
+  "cors": true
+}</code></pre>
+      <p>Priority: CLI flags, then environment, then config file, then defaults.</p>
+    </section>
+    <section>
+      <h2>When not to use it</h2>
+      <p>From the paper: no fixed schema in advance; deferred-relevance observations; tasks where the trajectory itself is the output (audit, provenance). Single-agent only unless you add conflict resolution for concurrent writes.</p>
+    </section>
+    <section>
+      <h2>License and links</h2>
+      <p>MIT, copyright 2026 NosytLabs. Source and tests on GitHub. Paper: <a href="https://arxiv.org/abs/2608.26263">arXiv:2608.26263</a>.</p>
+      <p><a href="https://github.com/NosytLabs/skillstate-proxy">github.com/NosytLabs/skillstate-proxy</a> · <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/LICENSE">LICENSE</a> · <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/README.md">README</a></p>
+    </section>
+  </main>
+  <footer>
+    <p>skillstate-proxy v0.1.0 · not affiliated with OpenAI or Anthropic · this site is static docs, not the proxy itself</p>
+  </footer>
+</body>
+</html>
