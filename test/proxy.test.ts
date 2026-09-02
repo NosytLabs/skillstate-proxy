@@ -232,6 +232,33 @@ describe("proxy: end-to-end with mock upstream", () => {
     expect(nf2.status).toBe(404);
   });
 
+  it("allows CORS preflight for DELETE /state", async () => {
+    const pre = await fetch(`http://127.0.0.1:${proxyPort}/state?session=cors-preflight`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "https://example.com",
+        "access-control-request-method": "DELETE",
+        "access-control-request-headers": "content-type, x-skillstate-session",
+      },
+    });
+    expect(pre.status).toBe(204);
+    const allow = (pre.headers.get("access-control-allow-methods") ?? "").toUpperCase();
+    expect(allow).toContain("DELETE");
+    expect(allow).toContain("GET");
+    expect(allow).toContain("POST");
+    expect(allow).toContain("OPTIONS");
+    expect(pre.headers.get("access-control-allow-origin")).toBe("*");
+
+    const del = await fetch(`http://127.0.0.1:${proxyPort}/state?session=cors-preflight`, {
+      method: "DELETE",
+      headers: { origin: "https://example.com" },
+    });
+    expect(del.status).toBe(204);
+    expect(del.headers.get("access-control-allow-origin")).toBe("*");
+    const actual = (del.headers.get("access-control-allow-methods") ?? "").toUpperCase();
+    expect(actual).toContain("DELETE");
+  });
+
   it("accepts Anthropic /v1/messages and returns Anthropic shape", async () => {
     mockCalls = [];
     const sid = "test-anthropic";
