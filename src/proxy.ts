@@ -276,7 +276,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
       // CORS headers
       if (config.cors) {
         res.setHeader("access-control-allow-origin", "*");
-        res.setHeader("access-control-allow-methods", "GET, POST, OPTIONS");
+        res.setHeader("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
         res.setHeader("access-control-allow-headers", "content-type, authorization, x-skillstate-session");
         if (req.method === "OPTIONS") {
           res.statusCode = 204;
