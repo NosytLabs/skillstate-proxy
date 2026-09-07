@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://nosytlabs.github.io/skillstate-proxy/sitemap.xml
