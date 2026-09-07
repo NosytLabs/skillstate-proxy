@@ -66,7 +66,7 @@ OpenAI / Anthropic / Gonka / Ollama</code></pre>
     </section>
     <section>
       <h2>Why it saves money</h2>
-      <p>Append-only transcripts grow linearly. SKILL.state stays a few hundred tokens per step. A live 50-step run on Gonka MiniMax-M2.7 (2026-09-07) used <strong>16,562 vs 212,606</strong> prompt tokens (92.2% less). Step 50 was 403 vs 8,904 (22×). At GPT-4o rates that same run is about $0.16 vs $0.63.</p>
+      <p>Append-only transcripts grow linearly. SKILL.state stays a few hundred tokens per step. A live 50-step run on Gonka MiniMax-M2.7 (2026-09-07) used <strong>16,562 vs 212,606</strong> prompt tokens (92.2% less). Step 50 was 403 vs 8,904 (22×). Re-run the same day: <strong>16,805 vs 185,699</strong> (91.0%), step 50 flat at 316 (~336 constant avg). At GPT-4o rates that same run is about $0.16 vs $0.63.</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Steps</th><th>Provider</th><th>Baseline</th><th>SKILL.state</th><th>Save</th></tr></thead>
@@ -96,6 +96,21 @@ OpenAI / Anthropic / Gonka / Ollama</code></pre>
       </ul>
     </section>
     <section>
+      <h2>vs npm <code>skillstate</code> (the library)</h2>
+      <p><a href="https://www.npmjs.com/package/skillstate">skillstate</a> 1.1.2 (vitkuz573) is a TypeScript <strong>runtime you import</strong> — you rewrite your loop around <code>runtime.step()</code> and pass it your own <code>llm()</code> callback. 736+ tests, MCP server, OpenCode/Claude/Codex adapters. Benchmarks are mostly character-count harnesses (they say so). Their own README notes Claude Code and Codex adapters <strong>cannot trim host history</strong> — append-only hooks mean no O(1) there.</p>
+      <table>
+        <thead><tr><th></th><th>This proxy</th><th>skillstate (library)</th></tr></thead>
+        <tbody>
+          <tr><td>Shape</td><td>Drop-in HTTP <code>:8789</code></td><td>Library + MCP + host hooks</td></tr>
+          <tr><td>Install into existing agent</td><td>Change <code>base_url</code></td><td>Rewrite around <code>runtime.step()</code></td></tr>
+          <tr><td>Live tokens</td><td>Gonka MiniMax-M2.7 50-step: 186k→17k prompt tok (<strong>91%</strong>, reproduced twice)</td><td>Paper numbers + local char harness</td></tr>
+          <tr><td>Failover / 401 / tools</td><td>Multi-upstream, circuit breaker, tool_calls pass-through</td><td>Your <code>llm()</code> function</td></tr>
+          <tr><td>Host-history trimming</td><td>Yes — proxy rewrites every request server-side</td><td>OpenCode only; Claude/Codex append-only</td></tr>
+          <tr><td>npm name</td><td><code>skillstate-proxy</code></td><td><code>skillstate</code></td></tr>
+        </tbody>
+      </table>
+      <p class="note">Not a fork, not a fight — complementary. Use the library inside a custom loop; use this proxy when your client already speaks OpenAI HTTP and you want savings without touching code.</p>
+
       <h2>vs Headroom / Mem0 / Letta / LangGraph</h2>
       <div class="table-wrap">
         <table>
@@ -108,7 +123,6 @@ OpenAI / Anthropic / Gonka / Ollama</code></pre>
           </tbody>
         </table>
       </div>
-      <p class="note">Also not the npm library <a href="https://www.npmjs.com/package/skillstate"><code>skillstate</code></a> (import <code>SkillStateRuntime</code>). That package is a loop you write. This one is HTTP: change <code>base_url</code>.</p>
     </section>
     <section>
       <h2>Same as 200k tokens of chat?</h2>

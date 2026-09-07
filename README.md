@@ -35,8 +35,9 @@ If your agent runs longer than ~15 steps, this saves you money and keeps it accu
 |---|---|---|
 | Shape | Drop-in HTTP `:8789` | Library + MCP + host hooks |
 | Install in an existing agent | Change `base_url` | Rewrite around `runtime.step()` |
-| Live tokens | Gonka MiniMax-M2.7 50-step: 212k→16k prompt tok (**92%**) | Paper numbers + local char harness |
+| Live tokens | Gonka MiniMax-M2.7 50-step: 212k→17k then 186k→17k prompt tok (**92% / 91%**, reproduced) | Paper numbers + local char harness |
 | Failover / 401 / tools | Multi-upstream, circuit breaker, tool_calls pass-through | Your `llm()` function |
+| Host-history trimming | Server-side on every request | OpenCode adapter only; Claude/Codex hooks are append-only (their README) |
 | Tests | 33 offline | 736+ (library fidelity) |
 | npm name | `skillstate-proxy` (not published yet) | **`skillstate` taken** |
 
