@@ -1,11 +1,12 @@
 {
   "name": "skillstate-proxy",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Drop-in token-savings proxy for long-horizon LLM agents. Cuts prompt tokens 60-95% via SKILL.state structured state (arXiv:2608.26263, EMNLP 2026). Model-agnostic: works with OpenAI, Anthropic, Venice, OpenRouter, vLLM, Ollama, any OpenAI-compatible upstream.",
   "type": "module",
   "license": "MIT",
   "bin": {
-    "skillstate": "dist/cli.js"
+    "skillstate": "dist/cli.js",
+    "skillstate-proxy": "dist/cli.js"
   },
   "main": "./dist/index.js",
   "exports": {

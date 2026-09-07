@@ -2,7 +2,7 @@
 import { startProxy, DEFAULT_CONFIG, type ProxyConfig } from "./proxy.js";
 import { readFileSync, existsSync } from "node:fs";
 
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 
 function printHelp(): void {
   console.log(`

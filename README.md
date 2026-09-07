@@ -40,7 +40,7 @@ If your agent runs longer than ~15 steps, this saves you money and keeps it accu
 | Failover / 401 / tools | Multi-upstream, circuit breaker, tool_calls pass-through | Your `llm()` function |
 | Host-history trimming | Server-side on every request | OpenCode adapter only; Claude/Codex hooks are append-only (their README) |
 | Tests | 33 offline | 736+ (library fidelity) |
-| npm name | [`skillstate-proxy`](https://www.npmjs.com/package/skillstate-proxy) **0.1.1** | **`skillstate` taken** |
+| npm name | [`skillstate-proxy`](https://www.npmjs.com/package/skillstate-proxy) **0.1.2** | **`skillstate` taken** |
 
 Not a fork. Complementary: use the library inside a custom loop; use this proxy when you already speak OpenAI HTTP.
 
@@ -639,7 +639,7 @@ Yes. Point your OpenAI/Anthropic client's `base_url` at the proxy. No code chang
 Any model that can output structured JSON. GPT-4o, Claude Sonnet, Gemini Flash, and larger open models work well. Smaller models (<7B) may need more rollback-retries. The proxy handles this automatically.
 
 **Is this production-ready?**
-v0.1.1: 33 offline tests, circuit breaker + rate limiter, disk sessions, CORS. Live-tested against Gonka MiniMax-M2.7 and MiniMax-M2. MIT, no SLA.
+v0.1.2: 33 offline tests, circuit breaker + rate limiter, disk sessions, CORS. Live-tested against Gonka MiniMax-M2.7 and MiniMax-M2. MIT, no SLA.
 
 **How is this different from just using a system prompt?**
 A system prompt can ask the model to be concise, but the transcript still grows. SKILL.state physically replaces the growing transcript with a bounded state — the model never sees old messages, only the current state + latest observation.
