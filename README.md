@@ -4,7 +4,7 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2608.26263-b31b1b.svg)](https://arxiv.org/abs/2608.26263)
 [![EMNLP 2026](https://img.shields.io/badge/EMNLP-2026-2c7be5.svg)](https://arxiv.org/abs/2608.26263)
-[![Tests](https://img.shields.io/badge/tests-30%2F30%20passing-brightgreen.svg)](#tests)
+[![Tests](https://img.shields.io/badge/tests-33%2F33%20passing-brightgreen.svg)](#tests)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
 
@@ -24,6 +24,26 @@ A drop-in HTTP proxy that sits between your LLM agent and any OpenAI-compatible 
 4. **Works with any model** — OpenAI, Anthropic, Venice, OpenRouter, vLLM, Ollama, Gonka, and any OpenAI-compatible endpoint
 
 If your agent runs longer than ~15 steps, this saves you money and keeps it accurate.
+
+## Same as a 200k-token transcript? No.
+
+The proxy does **not** replay 200k tokens of chat. Each turn the model only sees:
+
+1. the skill spec `P`
+2. the current JSON state `Σ`
+3. the latest observation `O`
+
+Reasoning is discarded. Arrays in `state_patch` **replace** (resend the full `sources` / `findings` list or you lose items). A fact never written into `Σ` is gone next turn — that is the point.
+
+What you keep: whatever the schema holds (`claim_id`, `sources`, `findings`, …).  
+What you lose: verbatim earlier turns, unless you patched them in.
+
+Paper (arXiv:2608.26263): at 200 steps accuracy was **0.94 vs 0.74** for append-only — less noise, not a lossless archive.
+
+Measured here (Gonka MiniMax-M2.7, 2026-09-07):
+
+- 50-step review: **212,606 → 16,562** prompt tokens (**92.2%**). Step 50: 8,904 vs 403.
+- 12-step *tool* loop with tiny JSON: only **10.3%** (6–8 real `tool_calls`). Short + small tools ≈ break-even. Headroom is for fat tool JSON; this proxy is for long history.
 
 ## Why use it? (save money on LLM tokens)
 
@@ -507,7 +527,7 @@ audit_demo.py         Optional long-horizon audit against a running proxy
 ## Tests
 
 ```bash
-npm test                              # 30 offline tests (no network)
+npm test                              # 33 offline tests (no network)
 SKILLSTATE_LIVE=1 SKILLSTATE_API_KEY=... npm test   # + live provider tests
 
 # MiniMax (verified):
@@ -583,7 +603,7 @@ Yes. Point your OpenAI/Anthropic client's `base_url` at the proxy. No code chang
 Any model that can output structured JSON. GPT-4o, Claude Sonnet, Gemini Flash, and larger open models work well. Smaller models (<7B) may need more rollback-retries. The proxy handles this automatically.
 
 **Is this production-ready?**
-The proxy has 30 offline tests, circuit breaker + rate limiter per upstream, session persistence to disk, and CORS support. It's used in production with Venice, OpenAI, and Gonka backends.
+The proxy has 33 offline tests, circuit breaker + rate limiter per upstream, session persistence to disk, and CORS support. It's used in production with Venice, OpenAI, and Gonka backends.
 
 **How is this different from just using a system prompt?**
 A system prompt can ask the model to be concise, but the transcript still grows. SKILL.state physically replaces the growing transcript with a bounded state — the model never sees old messages, only the current state + latest observation.

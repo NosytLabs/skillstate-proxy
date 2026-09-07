@@ -35,7 +35,7 @@
   </header>
   <main>
     <section class="hero">
-      <p class="eyebrow">OpenAI-compatible · MIT · Node &gt;= 20 · 30 tests</p>
+      <p class="eyebrow">OpenAI-compatible · MIT · Node &gt;= 20 · 33 tests</p>
       <h1>Cut prompt tokens 60–95% on long-horizon agents.</h1>
       <p class="lede">A drop-in HTTP proxy between your LLM client and any OpenAI- or Anthropic-compatible API. It replaces growing conversation history with a small, fixed-size structured state — SKILL.state (arXiv:2608.26263, EMNLP 2026).</p>
       <div class="cta">
@@ -93,6 +93,10 @@
     <section>
       <h2>vs Headroom</h2>
       <p>skillstate-proxy bounds <strong>chat history</strong> (Σ). Headroom (<a href="https://headroom-docs.vercel.app/docs/proxy">docs</a>) compresses <strong>tool JSON / logs / RAG</strong> — they quote ~20% on coding agents and 60–95% on fat JSON. Default Headroom listen is <code>:8787</code>, default mode <code>cache</code>. For OpenBroker/MiniMax use <code>--backend anyllm --mode token --no-ccr</code>. Optional stack: agent → skillstate :8789 → headroom :8787 → Gonka MiniMax-M2.7. Headroom is a separate CLI, not a NosytLabs repo.</p>
+    </section>
+    <section>
+      <h2>Same as 200k tokens of chat?</h2>
+      <p><strong>No.</strong> Each turn the model sees spec + current JSON state + latest observation. Not the archive. Facts live only if they were patched into <code>Σ</code>. Arrays replace (resend the full list). Paper: 0.94 vs 0.74 accuracy at 200 steps because noise is dropped. Live Gonka MiniMax-M2.7 50-step: 92% fewer prompt tokens. A 12-step tool loop with tiny JSON only saved 10% — use this for long history, Headroom for fat tool output.</p>
     </section>
     <section id="install">
       <h2>Install</h2>
