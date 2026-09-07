@@ -1,16 +1,24 @@
 #!/usr/bin/env python3
-"""Long-horizon code audit through skillstate-proxy + gonka/deepseek.
+"""Long-horizon code audit through a running skillstate-proxy.
 
-Each step: send (P, current_file_content, Σ_state) -> model outputs state_patch -> merge.
-Demonstrates SKILL.state bounded-prompt behaviour: 10 files audited, state accumulates,
-prompt stays ~O(1) because we only send the current file + compact state, not full history.
+Each step sends (spec, current file, compact Σ). The model returns a state_patch.
+Prompt size stays ~O(1) because history is not replayed.
+
+Requires a proxy already listening (default http://127.0.0.1:8789).
+
+  SKILLSTATE_PROXY=http://127.0.0.1:8789/v1/chat/completions \\
+  SKILLSTATE_MODEL=gpt-4o-mini \\
+  python3 audit_demo.py
 """
-import json, os, urllib.request, sys, time
+import json, os, sys, time, urllib.request
+from pathlib import Path
 
-PROXY = "http://127.0.0.1:8791/v1/chat/completions"
-MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731"
-REPO = "/Users/tyson/Desktop/Code/ai/skillstate-proxy/src"
-FILES = sorted(f for f in os.listdir(REPO) if f.endswith(".ts"))
+ROOT = Path(__file__).resolve().parent
+PROXY = os.environ.get("SKILLSTATE_PROXY", "http://127.0.0.1:8789/v1/chat/completions")
+COST_URL = os.environ.get("SKILLSTATE_COST", PROXY.replace("/v1/chat/completions", "/cost"))
+MODEL = os.environ.get("SKILLSTATE_MODEL", "gpt-4o-mini")
+REPO = Path(os.environ.get("SKILLSTATE_AUDIT_DIR", ROOT / "src"))
+FILES = sorted(f.name for f in REPO.iterdir() if f.suffix == ".ts")
 
 SPEC = (
     "You are an expert senior code reviewer auditing a TypeScript proxy codebase. "
@@ -28,7 +36,6 @@ def call(messages, max_tokens=800):
         return json.loads(r.read())
 
 def extract_state_patch(content):
-    # tolerate truncated output / reasoning prefix before the json block
     if "```json" in content:
         block = content.split("```json")[1].split("```")[0].strip()
     elif "{" in content and "state_patch" in content:
@@ -43,14 +50,15 @@ def extract_state_patch(content):
         return None
 
 def main():
+    if not FILES:
+        print(f"no .ts files in {REPO}", file=sys.stderr)
+        sys.exit(1)
     state = {"files_done": [], "findings": [], "total_issues": 0}
-    print(f"Auditing {len(FILES)} files via skillstate-proxy -> gonka/deepseek\n")
+    print(f"Auditing {len(FILES)} files via {PROXY} model={MODEL}\n")
     all_findings = {}
     for i, fname in enumerate(FILES):
-        path = os.path.join(REPO, fname)
-        with open(path) as f:
-            code = f.read()
-        # truncate huge files to keep the demo visible
+        path = REPO / fname
+        code = path.read_text()
         if len(code) > 6000:
             code = code[:6000] + "\n... [truncated]"
         user_msg = (
@@ -59,18 +67,21 @@ def main():
             f"--- file content ---\n{code}"
         )
         try:
-            resp = call([{"role":"system","content":SPEC},{"role":"user","content":user_msg}])
+            resp = call([{"role": "system", "content": SPEC}, {"role": "user", "content": user_msg}])
             content = resp["choices"][0]["message"]["content"]
             usage = resp.get("usage", {})
             patch = extract_state_patch(content)
             if patch:
                 state["files_done"].append(patch.get("file", fname))
                 state["total_issues"] += int(patch.get("issue_count", 0))
-                for f in patch.get("findings", []):
-                    state["findings"].append(f)
-                    all_findings.setdefault(fname, []).append(f)
-            print(f"  [{i+1}/{len(FILES)}] {fname}: prompt={usage.get('prompt_tokens')} "
-                  f"completion={usage.get('completion_tokens')} issues_this_file={patch.get('issue_count','?') if patch else '?'}")
+                for finding in patch.get("findings", []):
+                    state["findings"].append(finding)
+                    all_findings.setdefault(fname, []).append(finding)
+            print(
+                f"  [{i+1}/{len(FILES)}] {fname}: prompt={usage.get('prompt_tokens')} "
+                f"completion={usage.get('completion_tokens')} "
+                f"issues_this_file={patch.get('issue_count', '?') if patch else '?'}"
+            )
         except Exception as e:
             print(f"  [{i+1}/{len(FILES)}] {fname}: ERROR {e}")
         time.sleep(0.5)
@@ -83,11 +94,10 @@ def main():
         print(f"\n--- {fname} ---")
         for f in finds:
             print(f"  - {f}")
-    # total tokens from proxy cost
     try:
-        with urllib.request.urlopen("http://127.0.0.1:8791/cost", timeout=10) as r:
+        with urllib.request.urlopen(COST_URL, timeout=10) as r:
             cost = json.loads(r.read())
-        print(f"\n=== PROXY COST LEDGER (24h) ===")
+        print("\n=== PROXY COST LEDGER (24h) ===")
         print(json.dumps(cost, indent=2)[:800])
     except Exception as e:
         print(f"\n(cost ledger unavailable: {e})")

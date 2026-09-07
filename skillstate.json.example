@@ -1,0 +1,29 @@
+{
+  "listenPort": 8789,
+  "upstreams": [
+    {
+      "name": "openai",
+      "url": "https://api.openai.com/v1",
+      "apiKey": "YOUR_UPSTREAM_API_KEY",
+      "priority": 0
+    },
+    {
+      "name": "openrouter",
+      "url": "https://openrouter.ai/api/v1",
+      "apiKey": "YOUR_SECOND_UPSTREAM_API_KEY",
+      "priority": 1
+    }
+  ],
+  "defaultModel": "gpt-4o-mini",
+  "stateDir": "~/.skillstate/state",
+  "schema": ["step", "notes", "flags"],
+  "initialState": {
+    "step": 0,
+    "notes": [],
+    "flags": []
+  },
+  "discardReasoning": true,
+  "maxRetries": 2,
+  "cors": true,
+  "costLedgerPath": "~/.skillstate/spend.jsonl"
+}
