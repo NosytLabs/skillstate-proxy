@@ -460,6 +460,13 @@ audit_demo.py         Optional long-horizon audit against a running proxy
 ```bash
 npm test                              # 30 offline tests (no network)
 SKILLSTATE_LIVE=1 SKILLSTATE_API_KEY=... npm test   # + live provider tests
+
+# MiniMax (verified):
+SKILLSTATE_LIVE=1 \
+SKILLSTATE_UPSTREAM=https://api.minimax.io/v1 \
+SKILLSTATE_MODEL=MiniMax-M2 \
+SKILLSTATE_API_KEY=... \
+npm test
 ```
 
 Offline tests need no API key. Live tests run only with `SKILLSTATE_LIVE=1` and a real key.
