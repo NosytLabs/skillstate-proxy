@@ -164,22 +164,22 @@ Same security-review script, append-only vs this proxy. Prompt tokens from MiniM
 
 8-step totals: **3,767 → 2,340 prompt tokens (37.9% less)**. SKILL.state stays ~290–310 tokens/step; baseline keeps climbing. Break-even is around step 4–5. Short chats should skip the proxy. Long agent loops (50–200 steps) are where the 60–95% paper numbers show up.
 
-### vs Headroom (stack them)
+### vs Headroom / Mem0 / Letta / LangGraph
 
-Official Headroom ([docs](https://headroom-docs.vercel.app/docs/proxy), [repo](https://github.com/headroomlabs-ai/headroom)): compresses **tool outputs, logs, files, RAG JSON** (they quote ~20% on coding agents, 60–95% on fat JSON). Default listen **`:8787`**, default `--mode cache` / profile `coding`. Use `--mode token` or `HEADROOM_SAVINGS_PROFILE=agent-90` when you want max compression. `--backend anyllm` for OpenBroker/MiniMax (`openai` backend ignores custom `api_base` and 401s). `--no-ccr` if the client has no `headroom_retrieve` tool.
+| | **skillstate-proxy** | **Headroom** | **Mem0** | **Letta (MemGPT)** |
+|---|---|---|---|---|
+| Shrinks | Growing **chat history** → Σ | Fat **tool JSON / logs** | Retrieved memories (~90% in their benches) | Core + archival blocks |
+| Interface | Drop-in HTTP `:8789` | CLI proxy `:8787` | SDK / cloud | Full agent runtime |
+| Lock-in | None | Their CLI | Their store | Their agent |
+| Best for | 15+ step loops | Huge tool payloads | User prefs across chats | Persistent personas |
 
-This proxy bounds **chat history** (Σ). They are complementary, not substitutes.
+LangGraph checkpoints save the **whole graph including messages** — resume, not a token firewall.
 
-| | **skillstate-proxy** | **Headroom** |
-|---|---|---|
-| What it shrinks | Growing **chat history** → bounded Σ | Fat **tool outputs / logs / JSON** |
-| Best for | 15+ step agents | Huge tool JSON, log dumps, RAG |
-| Break-even | ~5 steps (overhead first) | First large tool payload |
-| Listen | this repo, `:8789` | `headroom proxy` `:8787` (not a NosytLabs repo) |
+Official Headroom: default `--mode cache`, profile `coding`. For OpenBroker/MiniMax: `--backend anyllm --mode token --no-ccr`.
 
-Optional stack: `agent → skillstate :8789 → headroom :8787 --backend anyllm --mode token --no-ccr → OpenBroker MiniMax-M2.7`.
+Optional stack: `agent → skillstate :8789 → headroom :8787 → Gonka MiniMax-M2.7`.
 
-Hermes `auxiliary.headroom` on this machine is a **named Gonka route**, not the Headroom binary. There is no Headroom git checkout under `~/Desktop/Code`.
+Hermes `auxiliary.headroom` on this machine is a **named Gonka route**, not the Headroom binary. No Headroom git checkout under `~/Desktop/Code`.
 
 ### Accuracy & robustness (paper benchmarks)
 

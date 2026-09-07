@@ -53,11 +53,14 @@
     <section>
       <h2>What it is</h2>
       <p>skillstate-proxy sits in front of OpenAI, Anthropic, Venice, OpenRouter, vLLM, Ollama, Gonka, or any OpenAI-compatible upstream. Each request is rewritten to spec plus current state plus latest observation. The model returns a <code>state_patch</code> plus an action. The proxy merges the patch, discards reasoning, and never re-sends the full transcript.</p>
-      <pre class="diagram"><code>client ──► skillstate-proxy :8789 ──► OpenAI · Anthropic · OpenRouter · Gonka · Ollama
-               │
-               ├─ Σ JSON on disk per session
-               ├─ rewrite to (P, Σ, O)
-               └─ merge ΔΣ, drop reasoning</code></pre>
+      <pre class="diagram"><code>your agent
+    │
+    ▼
+skillstate :8789     Σ JSON on disk
+    │                rewrite (P, Σ, latest O)
+    │                drop reasoning
+    ▼
+OpenAI / Anthropic / Gonka / Ollama</code></pre>
     </section>
     <section>
       <h2>Why it saves money</h2>
@@ -91,8 +94,19 @@
       </ul>
     </section>
     <section>
-      <h2>vs Headroom</h2>
-      <p>skillstate-proxy bounds <strong>chat history</strong> (Σ). Headroom (<a href="https://headroom-docs.vercel.app/docs/proxy">docs</a>) compresses <strong>tool JSON / logs / RAG</strong> — they quote ~20% on coding agents and 60–95% on fat JSON. Default Headroom listen is <code>:8787</code>, default mode <code>cache</code>. For OpenBroker/MiniMax use <code>--backend anyllm --mode token --no-ccr</code>. Optional stack: agent → skillstate :8789 → headroom :8787 → Gonka MiniMax-M2.7. Headroom is a separate CLI, not a NosytLabs repo.</p>
+      <h2>vs Headroom / Mem0 / Letta / LangGraph</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th></th><th>This proxy</th><th>Headroom</th><th>Mem0</th><th>Letta</th></tr></thead>
+          <tbody>
+            <tr><td>What shrinks</td><td>Chat history → Σ</td><td>Fat tool JSON / logs</td><td>Retrieved memories</td><td>Core + archival blocks</td></tr>
+            <tr><td>Drop-in HTTP</td><td>Yes (:8789)</td><td>Yes (:8787)</td><td>SDK / API</td><td>Full agent runtime</td></tr>
+            <tr><td>Lock-in</td><td>None (any OpenAI client)</td><td>CLI</td><td>Their store</td><td>Their agent</td></tr>
+            <tr><td>Best for</td><td>15+ step loops</td><td>Huge tool payloads</td><td>User prefs across chats</td><td>Persistent personas</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">Stack optional: agent → skillstate :8789 → headroom :8787 (<code>--backend anyllm --mode token --no-ccr</code>) → Gonka MiniMax-M2.7. LangGraph checkpoints save the whole graph (including messages) — complementary, not a token firewall.</p>
     </section>
     <section>
       <h2>Same as 200k tokens of chat?</h2>

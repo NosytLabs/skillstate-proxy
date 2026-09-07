@@ -93,9 +93,12 @@ pre {
   overflow-x: auto;
   border-radius: 10px;
   font: 13px/1.45 ui-monospace, Menlo, monospace;
+  white-space: pre;
+  color: var(--ink);
 }
-code { font-family: ui-monospace, Menlo, monospace; font-size: 0.88em; }
-.diagram { color: #c9d2c2; }
+code { font-family: ui-monospace, Menlo, monospace; font-size: 0.88em; color: var(--accent); }
+pre code { color: inherit; }
+.diagram { color: var(--ink); }
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 0.95rem; }
 th, td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid var(--line); }

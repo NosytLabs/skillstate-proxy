@@ -97,6 +97,10 @@
     "type": "git",
     "url": "https://github.com/NosytLabs/skillstate-proxy.git"
   },
+  "homepage": "https://nosytlabs.github.io/skillstate-proxy/",
+  "bugs": {
+    "url": "https://github.com/NosytLabs/skillstate-proxy/issues"
+  },
   "engines": {
     "node": ">=20"
   },
