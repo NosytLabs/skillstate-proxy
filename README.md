@@ -25,6 +25,23 @@ A drop-in HTTP proxy that sits between your LLM agent and any OpenAI-compatible 
 
 If your agent runs longer than ~15 steps, this saves you money and keeps it accurate.
 
+## What long-horizon tasks this is for
+
+Anything with **15–200+ model turns** and a schema you can write. Paper (arXiv:2608.26263) used InterCode CTF + warehouse ops. This repo measured a 50-step security review (92% fewer prompt tokens on Gonka MiniMax-M2.7).
+
+| Job | Put in Σ | Skip this proxy |
+|---|---|---|
+| Code review / audit | `files_checked`, `findings`, `severity` | One-file glance |
+| SWE loop (edit until tests pass) | `files`, `errors`, `tests` | Single patch |
+| Research / lit review | `claim_id`, `sources`, `notes` | One paper summary |
+| CTF / tool-use env (paper) | `flags`, `inventory`, `room` | |
+| Ops / warehouse (paper) | `orders`, `stock`, `step` | |
+| Data pipeline agent | `tables`, `rows`, `fail` | |
+
+Fat tool JSON (huge logs, RAG dumps) is **Headroom**, not this. 3-turn chat: skip both.
+
+Schema rule: arrays **replace**. Resend the full `findings` / `sources` list every turn or you lose items.
+
 ## Same as a 200k-token transcript? No.
 
 The proxy does **not** replay 200k tokens of chat. Each turn the model only sees:
