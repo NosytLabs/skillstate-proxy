@@ -30,6 +30,7 @@
       <a href="#api">API</a>
       <a href="#config">Config</a>
       <a href="https://github.com/NosytLabs/skillstate-proxy">GitHub</a>
+      <a href="https://www.npmjs.com/package/skillstate-proxy">npm</a>
       <a href="https://arxiv.org/abs/2608.26263">Paper</a>
     </nav>
   </header>
@@ -39,7 +40,7 @@
       <h1>Cut prompt tokens 60–95% on long-horizon agents.</h1>
       <p class="lede">A drop-in HTTP proxy between your LLM client and any OpenAI- or Anthropic-compatible API. It replaces growing conversation history with a small, fixed-size structured state — SKILL.state (arXiv:2608.26263, EMNLP 2026). Not the npm library <code>skillstate</code> (that is an importable runtime). This is the proxy: point <code>base_url</code> at it.</p>
       <div class="cta">
-        <a class="btn primary" href="https://github.com/NosytLabs/skillstate-proxy">Star on GitHub</a>
+        <a class="btn primary" href="https://www.npmjs.com/package/skillstate-proxy">npm i skillstate-proxy</a>
         <a class="btn" href="#install">Install</a>
         <a class="btn" href="https://github.com/NosytLabs/skillstate-proxy/blob/main/README.md">Full README</a>
       </div>
@@ -130,16 +131,14 @@ OpenAI / Anthropic / Gonka / Ollama</code></pre>
     </section>
     <section id="install">
       <h2>Install</h2>
-      <p>Binary is <code>skillstate</code>. Default listen: <code>127.0.0.1:8789</code>.</p>
-      <pre><code>git clone https://github.com/NosytLabs/skillstate-proxy.git
-cd skillstate-proxy
-npm install &amp;&amp; npm run build
+      <p>Binary is <code>skillstate</code>. Default listen: <code>127.0.0.1:8789</code>. Package: <a href="https://www.npmjs.com/package/skillstate-proxy"><code>skillstate-proxy@0.1.0</code></a>.</p>
+      <pre><code>npx skillstate-proxy
 
-cp skillstate.json.example skillstate.json   # fill YOUR keys, file is gitignored
-
+# or
+npm i -g skillstate-proxy
 SKILLSTATE_UPSTREAM=https://api.openai.com/v1 \
 SKILLSTATE_API_KEY=YOUR_UPSTREAM_API_KEY \
-npm start</code></pre>
+skillstate</code></pre>
       <p>Point any OpenAI client at <code>http://127.0.0.1:8789/v1</code>. Responses include <code>x-skillstate-session</code>, <code>x-skillstate-step</code>, <code>x-skillstate-cost-usd</code>.</p>
       <pre><code>from openai import OpenAI
 c = OpenAI(base_url="http://127.0.0.1:8789/v1", api_key="ignored")

@@ -2,6 +2,7 @@
 
 > **Token-savings proxy for long-horizon LLM agents. Cuts prompt tokens 60–95%, keeps accuracy high, works with any OpenAI- or Anthropic-compatible API. Implements [SKILL.state](https://arxiv.org/abs/2608.26263) (EMNLP 2026).**
 
+[![npm](https://img.shields.io/npm/v/skillstate-proxy.svg)](https://www.npmjs.com/package/skillstate-proxy)
 [![arXiv](https://img.shields.io/badge/arXiv-2608.26263-b31b1b.svg)](https://arxiv.org/abs/2608.26263)
 [![EMNLP 2026](https://img.shields.io/badge/EMNLP-2026-2c7be5.svg)](https://arxiv.org/abs/2608.26263)
 [![Tests](https://img.shields.io/badge/tests-33%2F33%20passing-brightgreen.svg)](#tests)
@@ -39,7 +40,7 @@ If your agent runs longer than ~15 steps, this saves you money and keeps it accu
 | Failover / 401 / tools | Multi-upstream, circuit breaker, tool_calls pass-through | Your `llm()` function |
 | Host-history trimming | Server-side on every request | OpenCode adapter only; Claude/Codex hooks are append-only (their README) |
 | Tests | 33 offline | 736+ (library fidelity) |
-| npm name | `skillstate-proxy` (not published yet) | **`skillstate` taken** |
+| npm name | [`skillstate-proxy`](https://www.npmjs.com/package/skillstate-proxy) **0.1.0** | **`skillstate` taken** |
 
 Not a fork. Complementary: use the library inside a custom loop; use this proxy when you already speak OpenAI HTTP.
 
@@ -270,19 +271,21 @@ SKILL.state is the only approach that achieves both high token savings AND high 
 ## Quickstart (30 seconds)
 
 ```bash
-git clone https://github.com/NosytLabs/skillstate-proxy.git
-cd skillstate-proxy
-npm install && npm run build
+# published package — binary is `skillstate`
+npx skillstate-proxy --help
 
-# any OpenAI-compatible upstream
 SKILLSTATE_UPSTREAM=https://openrouter.ai/api/v1 \
 SKILLSTATE_API_KEY=sk-or-... \
-npm start
+npx skillstate-proxy
 ```
+
+Or install once: `npm i -g skillstate-proxy` then `skillstate`.
+
+From git (dev): `git clone https://github.com/NosytLabs/skillstate-proxy.git && cd skillstate-proxy && npm install && npm run build && npm start`.
 
 Point your agent at `http://127.0.0.1:8789/v1`. **`tools` / `tool_calls` pass through** — the proxy keeps your function-calling loop; it only replaces chat history with Σ.
 
-No config file required. Optional: `cp skillstate.json.example skillstate.json` then `npm start`.
+No config file required. Optional: `cp skillstate.json.example skillstate.json` then `skillstate --config skillstate.json`.
 
 Dev without a build: `npm run dev` (`tsx src/cli.ts`).
 
