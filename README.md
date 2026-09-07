@@ -11,7 +11,7 @@
 
 ---
 
-> **Save 60–95% on LLM token costs for long-running AI agents.** If your agent makes 50+ API calls per task, this proxy pays for itself in minutes. Works with OpenAI, Anthropic, Venice, OpenRouter, Gonka, Ollama, or any OpenAI-compatible API.
+Install: [`npm i -g skillstate-proxy`](https://www.npmjs.com/package/skillstate-proxy) · docs: [nosytlabs.github.io/skillstate-proxy](https://nosytlabs.github.io/skillstate-proxy/) · source: [github.com/NosytLabs/skillstate-proxy](https://github.com/NosytLabs/skillstate-proxy)
 
 ---
 
@@ -40,7 +40,7 @@ If your agent runs longer than ~15 steps, this saves you money and keeps it accu
 | Failover / 401 / tools | Multi-upstream, circuit breaker, tool_calls pass-through | Your `llm()` function |
 | Host-history trimming | Server-side on every request | OpenCode adapter only; Claude/Codex hooks are append-only (their README) |
 | Tests | 33 offline | 736+ (library fidelity) |
-| npm name | [`skillstate-proxy`](https://www.npmjs.com/package/skillstate-proxy) **0.1.0** | **`skillstate` taken** |
+| npm name | [`skillstate-proxy`](https://www.npmjs.com/package/skillstate-proxy) **0.1.1** | **`skillstate` taken** |
 
 Not a fork. Complementary: use the library inside a custom loop; use this proxy when you already speak OpenAI HTTP.
 
@@ -79,6 +79,7 @@ Paper (arXiv:2608.26263): at 200 steps accuracy was **0.94 vs 0.74** for append-
 Measured here (Gonka MiniMax-M2.7, 2026-09-07):
 
 - 50-step review: **212,606 → 16,562** prompt tokens (**92.2%**). Step 50: 8,904 vs 403.
+- Same-day re-run: **185,699 → 16,805** (**91.0%**), ~336 tok/step, 23.6× at step 50.
 - 12-step *tool* loop with tiny JSON: only **10.3%** (6–8 real `tool_calls`). Short + small tools ≈ break-even. Headroom is for fat tool JSON; this proxy is for long history.
 
 ## Why use it? (save money on LLM tokens)
@@ -237,7 +238,7 @@ Coding assistants, research agents, and task planners running 50–200+ steps. T
 Maintain a compact case file instead of replaying the whole chat every turn. Session state captures the customer's issue, progress, and flags without transcript bloat.
 
 ### Cost-sensitive deployments
-Pay per token on OpenAI/Anthropic/Venice? Cutting prompt tokens 60–95% cuts the bill directly. A 50-step task that costs $0.81 on GPT-4o drops to $0.33. For teams running agents at scale, this can save thousands per month.
+Pay per token on OpenAI/Anthropic/Venice? Fewer prompt tokens cut the bill. Our 50-step MiniMax run (GPT-4o rates applied after the fact): **$0.55 → $0.16**. Scale depends on how many long loops you run — not a guaranteed “thousands/month.”
 
 ### Multi-agent systems
 Each agent gets its own bounded state, preventing cross-agent context pollution. No shared transcript leakage.
@@ -638,7 +639,7 @@ Yes. Point your OpenAI/Anthropic client's `base_url` at the proxy. No code chang
 Any model that can output structured JSON. GPT-4o, Claude Sonnet, Gemini Flash, and larger open models work well. Smaller models (<7B) may need more rollback-retries. The proxy handles this automatically.
 
 **Is this production-ready?**
-The proxy has 33 offline tests, circuit breaker + rate limiter per upstream, session persistence to disk, and CORS support. It's used in production with Venice, OpenAI, and Gonka backends.
+v0.1.1: 33 offline tests, circuit breaker + rate limiter, disk sessions, CORS. Live-tested against Gonka MiniMax-M2.7 and MiniMax-M2. MIT, no SLA.
 
 **How is this different from just using a system prompt?**
 A system prompt can ask the model to be concise, but the transcript still grows. SKILL.state physically replaces the growing transcript with a bounded state — the model never sees old messages, only the current state + latest observation.
