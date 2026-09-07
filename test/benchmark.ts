@@ -15,6 +15,7 @@
  *   SKILLSTATE_MODEL     — model id (default: qwen3-5-9b)
  */
 import { startProxy } from "../src/proxy.js";
+import { costFor, gonkaCost } from "../src/pricing.js";
 
 const API_KEY = process.env.SKILLSTATE_API_KEY;
 const UPSTREAM = process.env.SKILLSTATE_UPSTREAM ?? "https://api.venice.ai/api/v1";
@@ -107,11 +108,14 @@ async function callUpstream(
     throw new Error(`Upstream ${label} failed (${r.status}): ${err.slice(0, 200)}`);
   }
   const j = await r.json();
+  const promptTokens = j.usage?.prompt_tokens ?? 0;
+  const completionTokens = j.usage?.completion_tokens ?? 0;
+  const costUsd = j.cost?.usd ?? costFor(MODEL, promptTokens, completionTokens);
   return {
     content: j.choices?.[0]?.message?.content ?? "",
-    promptTokens: j.usage?.prompt_tokens ?? 0,
-    completionTokens: j.usage?.completion_tokens ?? 0,
-    costUsd: j.cost?.usd ?? 0, // Venice reports real per-request cost
+    promptTokens,
+    completionTokens,
+    costUsd,
   };
 }
 
@@ -199,16 +203,23 @@ async function main() {
   const openaiBase = (basePrompt / 1e6) * 2.50 + (baseComp / 1e6) * 10.0;
   const openaiSS = (ssPrompt / 1e6) * 2.50 + (ssComp / 1e6) * 10.0;
 
+  const gnkBase = gonkaCost(basePrompt + baseComp);
+  const gnkSs = gonkaCost(ssPrompt + ssComp);
+
   console.log(`
 ${"═".repeat(60)}
   RESULTS — ${N} steps · ${MODEL}
 ${"═".repeat(60)}
 
-  BASELINE:     ${basePrompt.toLocaleString()} prompt tokens · $${baseCost.toFixed(6)} actual
-  SKILL.state:  ${ssPrompt.toLocaleString()} prompt tokens · $${ssCost.toFixed(6)} actual
+  BASELINE:     ${basePrompt.toLocaleString()} prompt tokens · $${baseCost.toFixed(6)}
+  SKILL.state:  ${ssPrompt.toLocaleString()} prompt tokens · $${ssCost.toFixed(6)}
 
   SAVINGS:      ${promptSaved.toLocaleString()} prompt tokens (${promptPct}%)
                 $${costSaved.toFixed(6)} saved
+
+  GONKA (0.01 GNK/1M @ $0.12):
+    baseline:   ${gnkBase.gnk.toFixed(6)} GNK ($${gnkBase.usd.toFixed(6)})
+    skillstate: ${gnkSs.gnk.toFixed(6)} GNK ($${gnkSs.usd.toFixed(6)})
 
   PROJECTED at 200 steps:
     baseline:   ~${Math.round(basePrompt * ratio200).toLocaleString()} prompt tokens

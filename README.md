@@ -78,20 +78,36 @@ Most AIs work by writing down **everything** that ever happened — every step, 
 
 ---
 
-## Real benchmark (Venice API · qwen3-5-9b · 50 steps)
+## Real benchmark (Gonka OpenBroker · MiniMax-M2.7 · 50 steps)
 
-Actual measured runs through this proxy vs. a plain append-only transcript. Costs are Venice's real reported per-request USD (run 2026-08-30).
+Live run 2026-09-07 against `https://api.openbroker.gonka.gg/v1` model `MiniMaxAI/MiniMax-M2.7`. Same 50-step security-review script (`npx tsx test/benchmark.ts 50`). Prompt tokens from upstream `usage`.
 
 | | Baseline | SKILL.state | Savings |
 |---|---:|---:|---:|
-| Prompt tokens (50 steps) | 274,540 | 75,606 | **72.5% less** |
-| Real cost | $0.0292 | $0.0097 | $0.0195 (67%) |
-| Tokens at step 50 | 9,746 | 1,606 | **6.1x less** |
-| Tokens at step 20 | 4,636 | 1,439 | 3.2x less |
+| Prompt tokens (50 steps) | 212,606 | 16,562 | **92.2% less** |
+| Tokens at step 50 | 8,904 | 403 | **22.1× less** |
+| Tokens at step 20 | 3,087 | 310 | 10.0× |
+| Tokens at step 5 | 552 | 301 | 1.8× |
+| Tokens at step 1 | 146 | 284 | 0.5× (setup overhead) |
+| If this were GPT-4o ($2.50 / $10 per 1M) | $0.633 | $0.157 | **$0.48 (75%)** |
+| Gonka (0.01 GNK / 1M @ $0.12) | ~$0.00026 | ~$0.00002 | cents — Gonka is already cheap |
 
-The baseline prompt grows linearly every step; SKILL.state stays ~1,500 tokens/step **no matter how long the task runs**. At 200+ steps the gap is 20x or more (see [paper results](#paper-benchmarks)).
+SKILL.state stayed **~280–450 tokens/step**. Baseline climbed to 8.9k. Break-even ~step 4–5. Short chats should skip the proxy.
 
-At GPT-4o rates the same 50-step workload would cost **$0.81 baseline vs $0.33 with SKILL.state**.
+```bash
+SKILLSTATE_UPSTREAM=https://api.openbroker.gonka.gg/v1 \
+SKILLSTATE_MODEL=MiniMaxAI/MiniMax-M2.7 \
+SKILLSTATE_API_KEY=... \
+npx tsx test/benchmark.ts 50
+```
+
+Tool-call loop (real `tools` / `tool_calls` / `role: tool`):
+
+```bash
+npx tsx test/benchmark-tools.ts 20
+```
+
+Older Venice qwen3-5-9b 50-step (2026-08-30): 274,540 → 75,606 prompt tokens (72.5%), $0.0292 → $0.0097.
 
 ### Cost calculator (estimate your savings)
 
@@ -130,20 +146,20 @@ Same security-review script, append-only vs this proxy. Prompt tokens from MiniM
 
 ### vs Headroom (stack them)
 
-They save tokens in **different places**:
+Official Headroom ([docs](https://headroom-docs.vercel.app/docs/proxy), [repo](https://github.com/headroomlabs-ai/headroom)): compresses **tool outputs, logs, files, RAG JSON** (they quote ~20% on coding agents, 60–95% on fat JSON). Default listen **`:8787`**, default `--mode cache` / profile `coding`. Use `--mode token` or `HEADROOM_SAVINGS_PROFILE=agent-90` when you want max compression. `--backend anyllm` for OpenBroker/MiniMax (`openai` backend ignores custom `api_base` and 401s). `--no-ccr` if the client has no `headroom_retrieve` tool.
+
+This proxy bounds **chat history** (Σ). They are complementary, not substitutes.
 
 | | **skillstate-proxy** | **Headroom** |
 |---|---|---|
 | What it shrinks | Growing **chat history** → bounded Σ | Fat **tool outputs / logs / JSON** |
-| Best for | 15+ step agents that forget or get expensive | RAG, huge tool JSON, log dumps |
+| Best for | 15+ step agents | Huge tool JSON, log dumps, RAG |
 | Break-even | ~5 steps (overhead first) | First large tool payload |
-| This Mac | This repo, `:8789` | CLI `headroom` (not a NosytLabs repo). Hermes `auxiliary.headroom` today is just a **named Gonka route**, not the Headroom binary |
+| Listen | this repo, `:8789` | `headroom proxy` `:8787` (not a NosytLabs repo) |
 
-Stack (optional): `agent → skillstate :8789 → headroom :8788 --backend anyllm --mode token --no-ccr → OpenBroker/MiniMax`.
+Optional stack: `agent → skillstate :8789 → headroom :8787 --backend anyllm --mode token --no-ccr → OpenBroker MiniMax-M2.7`.
 
-Headroom `--backend openai` drops custom `api_base` (calls api.openai.com with your key → 401). Use `--backend anyllm`. `--no-ccr` for Hermes/OpenCode (CCR markers need a retrieve tool you don't have).
-
-There is **no** `headroom` git repo under `~/Desktop/Code`. Don't confuse the Hermes provider name with the Headroom product.
+Hermes `auxiliary.headroom` on this machine is a **named Gonka route**, not the Headroom binary. There is no Headroom git checkout under `~/Desktop/Code`.
 
 ### Accuracy & robustness (paper benchmarks)
 

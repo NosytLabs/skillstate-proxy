@@ -541,8 +541,15 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
           let ex = extractDelta(content);
           let delta = ex.delta;
           let modelRawJson = upstreamJson;
-          const toolCalls = upstreamJson.choices?.[0]?.message?.tool_calls;
-          const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
+          const rawToolCalls = upstreamJson.choices?.[0]?.message?.tool_calls;
+          const toolCalls = Array.isArray(rawToolCalls)
+            ? rawToolCalls.filter((tc: any) => tc?.function?.name)
+            : [];
+          const hasToolCalls = toolCalls.length > 0;
+          if (upstreamJson.choices?.[0]?.message) {
+            if (hasToolCalls) upstreamJson.choices[0].message.tool_calls = toolCalls;
+            else delete upstreamJson.choices[0].message.tool_calls;
+          }
 
           // Tool-calling turns are first-class: do not rollback-retry them into a state_patch.
           while (!hasToolCalls && ex.format !== "paper" && attempts < maxRetries && content.length > 0) {

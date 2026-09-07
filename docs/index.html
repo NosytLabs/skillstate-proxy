@@ -35,7 +35,7 @@
   </header>
   <main>
     <section class="hero">
-      <p class="eyebrow">OpenAI-compatible · MIT · Node &gt;= 20 · 26 tests</p>
+      <p class="eyebrow">OpenAI-compatible · MIT · Node &gt;= 20 · 30 tests</p>
       <h1>Cut prompt tokens 60–95% on long-horizon agents.</h1>
       <p class="lede">A drop-in HTTP proxy between your LLM client and any OpenAI- or Anthropic-compatible API. It replaces growing conversation history with a small, fixed-size structured state — SKILL.state (arXiv:2608.26263, EMNLP 2026).</p>
       <div class="cta">
@@ -61,19 +61,20 @@
     </section>
     <section>
       <h2>Why it saves money</h2>
-      <p>Append-only transcripts grow linearly. SKILL.state stays about 1,500 tokens per step. A measured 50-step run on Venice (qwen3-5-9b, 2026-08-30) used 75,606 prompt tokens vs 274,540 baseline: 72.5% less, $0.0097 vs $0.0292.</p>
+      <p>Append-only transcripts grow linearly. SKILL.state stays a few hundred tokens per step. A live 50-step run on Gonka MiniMax-M2.7 (2026-09-07) used <strong>16,562 vs 212,606</strong> prompt tokens (92.2% less). Step 50 was 403 vs 8,904 (22×). At GPT-4o rates that same run is about $0.16 vs $0.63.</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Steps</th><th>Provider</th><th>Baseline</th><th>SKILL.state</th><th>Save</th></tr></thead>
           <tbody>
-            <tr><td>50</td><td>GPT-4o ($5 / 1M in)</td><td>$0.81</td><td>$0.33</td><td>59%</td></tr>
+            <tr><td>50</td><td>Gonka MiniMax-M2.7 (live)</td><td>212,606 tok</td><td>16,562 tok</td><td>92%</td></tr>
+            <tr><td>50</td><td>GPT-4o ($2.50 / 1M in, same tok)</td><td>$0.63</td><td>$0.16</td><td>75%</td></tr>
             <tr><td>100</td><td>GPT-4o</td><td>$3.20</td><td>$0.65</td><td>80%</td></tr>
             <tr><td>200</td><td>GPT-4o</td><td>$13.00</td><td>$1.22</td><td>91%</td></tr>
             <tr><td>50</td><td>Claude Sonnet ($3 / 1M in)</td><td>$0.49</td><td>$0.20</td><td>59%</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="note">Estimates from the project README. Real savings depend on provider and task length. MiniMax-M2 live 8-step run (2026-09-07): 3,767 → 2,340 prompt tokens (38%). Break-even around step 5.</p>
+      <p class="note">Gonka itself is ~0.01 GNK/1M so dollar savings there are cents. The 92% cut matters for context, rate limits, and when you point the same proxy at GPT-4o / Claude. Break-even around step 5.</p>
     </section>
     <section>
       <h2>What it includes</h2>
@@ -91,7 +92,7 @@
     </section>
     <section>
       <h2>vs Headroom</h2>
-      <p>skillstate-proxy bounds <strong>chat history</strong>. Headroom compresses <strong>tool JSON / logs</strong>. Optional stack: agent → skillstate :8789 → headroom :8788 (<code>--backend anyllm --mode token --no-ccr</code>) → MiniMax or OpenBroker. Headroom is a separate CLI, not a NosytLabs repo. Hermes' provider name <code>headroom</code> on this machine is currently a Gonka alias, not the Headroom binary.</p>
+      <p>skillstate-proxy bounds <strong>chat history</strong> (Σ). Headroom (<a href="https://headroom-docs.vercel.app/docs/proxy">docs</a>) compresses <strong>tool JSON / logs / RAG</strong> — they quote ~20% on coding agents and 60–95% on fat JSON. Default Headroom listen is <code>:8787</code>, default mode <code>cache</code>. For OpenBroker/MiniMax use <code>--backend anyllm --mode token --no-ccr</code>. Optional stack: agent → skillstate :8789 → headroom :8787 → Gonka MiniMax-M2.7. Headroom is a separate CLI, not a NosytLabs repo.</p>
     </section>
     <section id="install">
       <h2>Install</h2>

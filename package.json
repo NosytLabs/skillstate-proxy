@@ -29,6 +29,8 @@
     "start": "node dist/cli.js",
     "dev": "tsx src/cli.ts",
     "test": "vitest run",
+    "bench": "tsx test/benchmark.ts",
+    "bench:tools": "tsx test/benchmark-tools.ts",
     "test:watch": "vitest"
   },
   "keywords": [

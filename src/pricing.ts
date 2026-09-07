@@ -24,6 +24,8 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   // 0.01 GNK per 1M tokens (flat, input+output); USD shown at ~$0.12/GNK.
   // Developers pay per-token in GNK from their wallet; hosts earn GNK.
   "gonka": { input: 0.0012, output: 0.0012, source: "gonka.broker — 0.01 GNK/1M @ $0.12", asOf: "2026-08-29" },
+  "MiniMaxAI/MiniMax-M2.7": { input: 0.0012, output: 0.0012, source: "gonka OpenBroker — 0.01 GNK/1M @ $0.12", asOf: "2026-09-07" },
+  "MiniMax-M2.7": { input: 0.0012, output: 0.0012, source: "gonka OpenBroker — 0.01 GNK/1M @ $0.12", asOf: "2026-09-07" },
 
   // ── Venice (venice.ai) — per 1M tokens, USD ─────────────────────────
   // https://docs.venice.ai/llms.txt
