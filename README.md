@@ -110,7 +110,40 @@ Run it yourself on any provider:
 
 ```bash
 SKILLSTATE_API_KEY=your-key npx tsx test/benchmark.ts 50
+
+# MiniMax (this repo, 2026-09-07):
+SKILLSTATE_UPSTREAM=https://api.minimax.io/v1 SKILLSTATE_MODEL=MiniMax-M2 \
+SKILLSTATE_API_KEY=... npx tsx test/benchmark.ts 8
 ```
+
+### Measured live: MiniMax-M2, 8 steps (2026-09-07)
+
+Same security-review script, append-only vs this proxy. Prompt tokens from MiniMax `usage`:
+
+| Step | Baseline | SKILL.state | Ratio |
+|-----:|--------:|------------:|------:|
+| 1 | 144 | 282 | 0.5× (setup overhead) |
+| 5 | 503 | 294 | 1.7× |
+| 8 | 839 | 313 | **2.7×** |
+
+8-step totals: **3,767 → 2,340 prompt tokens (37.9% less)**. SKILL.state stays ~290–310 tokens/step; baseline keeps climbing. Break-even is around step 4–5. Short chats should skip the proxy. Long agent loops (50–200 steps) are where the 60–95% paper numbers show up.
+
+### vs Headroom (stack them)
+
+They save tokens in **different places**:
+
+| | **skillstate-proxy** | **Headroom** |
+|---|---|---|
+| What it shrinks | Growing **chat history** → bounded Σ | Fat **tool outputs / logs / JSON** |
+| Best for | 15+ step agents that forget or get expensive | RAG, huge tool JSON, log dumps |
+| Break-even | ~5 steps (overhead first) | First large tool payload |
+| This Mac | This repo, `:8789` | CLI `headroom` (not a NosytLabs repo). Hermes `auxiliary.headroom` today is just a **named Gonka route**, not the Headroom binary |
+
+Stack (optional): `agent → skillstate :8789 → headroom :8788 --backend anyllm --mode token --no-ccr → OpenBroker/MiniMax`.
+
+Headroom `--backend openai` drops custom `api_base` (calls api.openai.com with your key → 401). Use `--backend anyllm`. `--no-ccr` for Hermes/OpenCode (CCR markers need a retrieve tool you don't have).
+
+There is **no** `headroom` git repo under `~/Desktop/Code`. Don't confuse the Hermes provider name with the Headroom product.
 
 ### Accuracy & robustness (paper benchmarks)
 

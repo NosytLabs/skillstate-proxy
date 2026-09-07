@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>skillstate-proxy — cut LLM prompt tokens 60–95% for long-horizon agents</title>
   <meta name="description" content="Drop-in OpenAI- and Anthropic-compatible HTTP proxy. Replaces growing chat history with SKILL.state structured state. Cuts prompt tokens 60–95% on long agent loops. MIT, Node 20+, zero runtime deps.">
-  <meta name="keywords" content="LLM proxy, token savings, SKILL.state, OpenAI compatible, Anthropic, OpenRouter, Gonka, agent memory, prompt compression, long-horizon agents">
+  <meta name="keywords" content="LLM proxy, token savings, SKILL.state, Headroom, MiniMax, OpenAI compatible, Anthropic, OpenRouter, Gonka, agent memory, prompt compression, long-horizon agents">
   <meta name="robots" content="index,follow">
   <meta name="theme-color" content="#0e1110">
   <link rel="canonical" href="https://nosytlabs.github.io/skillstate-proxy/">
@@ -73,7 +73,7 @@
           </tbody>
         </table>
       </div>
-      <p class="note">Estimates from the project README. Real savings depend on provider and task length.</p>
+      <p class="note">Estimates from the project README. Real savings depend on provider and task length. MiniMax-M2 live 8-step run (2026-09-07): 3,767 → 2,340 prompt tokens (38%). Break-even around step 5.</p>
     </section>
     <section>
       <h2>What it includes</h2>
@@ -88,6 +88,10 @@
         <li><strong>Rollback-retry</strong> — retries when the model misses structured output.</li>
         <li><strong>Schema enforcement</strong> — drops out-of-schema keys so state stays small.</li>
       </ul>
+    </section>
+    <section>
+      <h2>vs Headroom</h2>
+      <p>skillstate-proxy bounds <strong>chat history</strong>. Headroom compresses <strong>tool JSON / logs</strong>. Optional stack: agent → skillstate :8789 → headroom :8788 (<code>--backend anyllm --mode token --no-ccr</code>) → MiniMax or OpenBroker. Headroom is a separate CLI, not a NosytLabs repo. Hermes' provider name <code>headroom</code> on this machine is currently a Gonka alias, not the Headroom binary.</p>
     </section>
     <section id="install">
       <h2>Install</h2>
