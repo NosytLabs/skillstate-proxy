@@ -9,7 +9,7 @@ import { applyDelta, mergeState, newSession } from "../src/state.js";
 import { rmSync } from "node:fs";
 
 const NEEDLE = "NEEDLE-7f3a";
-const N = 25;
+const N = 50;
 
 interface MockCall { body: any }
 let mockCalls: MockCall[] = [];
