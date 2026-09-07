@@ -25,6 +25,23 @@ A drop-in HTTP proxy that sits between your LLM agent and any OpenAI-compatible 
 
 If your agent runs longer than ~15 steps, this saves you money and keeps it accurate.
 
+## vs npm `skillstate` (library)
+
+[`skillstate`](https://www.npmjs.com/package/skillstate) **1.1.2** ([vitkuz573/skillstate](https://github.com/vitkuz573/skillstate)) is a **TypeScript runtime you import** (`SkillStateRuntime`). You pass `llm()` + `execute()`. 736+ tests, MCP (`skillstate-mcp`), OpenCode/Claude/Codex adapters. Benches are mostly **character-count harnesses** (they say so — not live Gemini).
+
+**This repo is an HTTP proxy.** Existing OpenAI/Anthropic clients keep working: set `base_url` to `:8789`. No `llm()` callback, no host plugin.
+
+| | **skillstate-proxy (this)** | **`skillstate` on npm** |
+|---|---|---|
+| Shape | Drop-in HTTP `:8789` | Library + MCP + host hooks |
+| Install in an existing agent | Change `base_url` | Rewrite around `runtime.step()` |
+| Live tokens | Gonka MiniMax-M2.7 50-step: 212k→16k prompt tok (**92%**) | Paper numbers + local char harness |
+| Failover / 401 / tools | Multi-upstream, circuit breaker, tool_calls pass-through | Your `llm()` function |
+| Tests | 33 offline | 736+ (library fidelity) |
+| npm name | `skillstate-proxy` (not published yet) | **`skillstate` taken** |
+
+Not a fork. Complementary: use the library inside a custom loop; use this proxy when you already speak OpenAI HTTP.
+
 ## What long-horizon tasks this is for
 
 Anything with **15–200+ model turns** and a schema you can write. Paper (arXiv:2608.26263) used InterCode CTF + warehouse ops. This repo measured a 50-step security review (92% fewer prompt tokens on Gonka MiniMax-M2.7).

@@ -37,7 +37,7 @@
     <section class="hero">
       <p class="eyebrow">OpenAI-compatible · MIT · Node &gt;= 20 · 33 tests</p>
       <h1>Cut prompt tokens 60–95% on long-horizon agents.</h1>
-      <p class="lede">A drop-in HTTP proxy between your LLM client and any OpenAI- or Anthropic-compatible API. It replaces growing conversation history with a small, fixed-size structured state — SKILL.state (arXiv:2608.26263, EMNLP 2026).</p>
+      <p class="lede">A drop-in HTTP proxy between your LLM client and any OpenAI- or Anthropic-compatible API. It replaces growing conversation history with a small, fixed-size structured state — SKILL.state (arXiv:2608.26263, EMNLP 2026). Not the npm library <code>skillstate</code> (that is an importable runtime). This is the proxy: point <code>base_url</code> at it.</p>
       <div class="cta">
         <a class="btn primary" href="https://github.com/NosytLabs/skillstate-proxy">Star on GitHub</a>
         <a class="btn" href="#install">Install</a>
@@ -108,7 +108,7 @@ OpenAI / Anthropic / Gonka / Ollama</code></pre>
           </tbody>
         </table>
       </div>
-      <p class="note">Stack optional: agent → skillstate :8789 → headroom :8787 (<code>--backend anyllm --mode token --no-ccr</code>) → Gonka MiniMax-M2.7. LangGraph checkpoints save the whole graph (including messages) — complementary, not a token firewall.</p>
+      <p class="note">Also not the npm library <a href="https://www.npmjs.com/package/skillstate"><code>skillstate</code></a> (import <code>SkillStateRuntime</code>). That package is a loop you write. This one is HTTP: change <code>base_url</code>.</p>
     </section>
     <section>
       <h2>Same as 200k tokens of chat?</h2>
