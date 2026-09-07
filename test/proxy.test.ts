@@ -15,7 +15,7 @@ import { rmSync, existsSync, readFileSync } from "node:fs";
 
 interface MockCall { path: string; body: any; }
 let mockCalls: MockCall[] = [];
-let mockMode: "ok-paper" | "ok-legacy" | "bad-then-good" = "ok-paper";
+let mockMode: "ok-paper" | "ok-legacy" | "bad-then-good" | "auth-fail" = "ok-paper";
 let mockServer: Server | null = null;
 let mockPort = 0;
 
@@ -32,6 +32,11 @@ function startMock() {
         res.setHeader("content-type", "application/json");
         const step = mockCalls.length;
         if (req.url?.includes("/chat/completions")) {
+          if (mockMode === "auth-fail") {
+            res.statusCode = 401;
+            res.end(JSON.stringify({ error: "missing or invalid API key" }));
+            return;
+          }
           if (mockMode === "bad-then-good") {
             if (step === 1) {
               // simulate model forgetting to emit state_patch
@@ -278,5 +283,40 @@ describe("proxy: end-to-end with mock upstream", () => {
     expect(j.role).toBe("assistant");
     expect(Array.isArray(j.content)).toBe(true);
     expect(j.content[0].type).toBe("text");
+  });
+
+  it("GET /health and /cost; unknown paths 404; prefix paths do not match", async () => {
+    const h = await fetch(`http://127.0.0.1:${proxyPort}/health`);
+    expect(h.status).toBe(200);
+    const hj = await h.json();
+    expect(hj.ok).toBe(true);
+    expect(Array.isArray(hj.upstreams)).toBe(true);
+
+    const h2 = await fetch(`http://127.0.0.1:${proxyPort}/v1/health`);
+    expect(h2.status).toBe(200);
+
+    const c = await fetch(`http://127.0.0.1:${proxyPort}/cost`);
+    expect(c.status).toBe(200);
+
+    const fake = await fetch(`http://127.0.0.1:${proxyPort}/healthcare`);
+    expect(fake.status).toBe(404);
+    const costly = await fetch(`http://127.0.0.1:${proxyPort}/costly`);
+    expect(costly.status).toBe(404);
+  });
+
+  it("forwards upstream 401 instead of wrapping as 200", async () => {
+    const prev = mockMode;
+    mockMode = "auth-fail";
+    mockCalls = [];
+    const r = await fetch(`http://127.0.0.1:${proxyPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer test", "x-skillstate-session": "test-401" },
+      body: JSON.stringify({
+        model: "test-model", stream: false,
+        messages: [{ role: "system", content: "TASK: auth" }, { role: "user", content: "go" }],
+      }),
+    });
+    mockMode = prev;
+    expect(r.status).toBe(401);
   });
 });

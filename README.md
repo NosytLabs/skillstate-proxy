@@ -4,7 +4,7 @@
 
 [![arXiv](https://img.shields.io/badge/arXiv-2608.26263-b31b1b.svg)](https://arxiv.org/abs/2608.26263)
 [![EMNLP 2026](https://img.shields.io/badge/EMNLP-2026-2c7be5.svg)](https://arxiv.org/abs/2608.26263)
-[![Tests](https://img.shields.io/badge/tests-24%2F24%20passing-brightgreen.svg)](#tests)
+[![Tests](https://img.shields.io/badge/tests-26%2F26%20passing-brightgreen.svg)](#tests)
 [![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](#license)
 
@@ -447,7 +447,7 @@ src/
   index.ts            Public API barrel
 test/
   state.test.ts       18 unit tests (merge, extraction, validation, prompt)
-  proxy.test.ts       6 integration tests (in-process mock upstream)
+  proxy.test.ts       8 integration tests (in-process mock upstream)
   live.test.ts        Live 3-step loop (SKILLSTATE_LIVE=1 + key)
   anthropic.test.ts   Live /v1/messages translation (SKILLSTATE_LIVE=1 + key)
   benchmark.ts        SKILL.state vs baseline benchmark (any provider)
@@ -463,7 +463,7 @@ audit_demo.py         Optional long-horizon audit against a running proxy
 ## Tests
 
 ```bash
-npm test                              # 24 offline tests (no network)
+npm test                              # 26 offline tests (no network)
 SKILLSTATE_LIVE=1 SKILLSTATE_API_KEY=... npm test   # + live provider tests
 ```
 
@@ -532,7 +532,7 @@ Yes. Point your OpenAI/Anthropic client's `base_url` at the proxy. No code chang
 Any model that can output structured JSON. GPT-4o, Claude Sonnet, Gemini Flash, and larger open models work well. Smaller models (<7B) may need more rollback-retries. The proxy handles this automatically.
 
 **Is this production-ready?**
-The proxy has 24 offline tests, circuit breaker + rate limiter per upstream, session persistence to disk, and CORS support. It's used in production with Venice, OpenAI, and Gonka backends.
+The proxy has 26 offline tests, circuit breaker + rate limiter per upstream, session persistence to disk, and CORS support. It's used in production with Venice, OpenAI, and Gonka backends.
 
 **How is this different from just using a system prompt?**
 A system prompt can ask the model to be concise, but the transcript still grows. SKILL.state physically replaces the growing transcript with a bounded state — the model never sees old messages, only the current state + latest observation.

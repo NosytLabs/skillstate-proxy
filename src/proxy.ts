@@ -9,7 +9,7 @@
 
 import { createServer, IncomingMessage, Server } from "node:http";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { newSession, buildStepPrompt, extractDelta, applyDelta, type StateSession } from "./state.js";
 import { estimateTokens, extractUsage } from "./token-estimate.js";
@@ -80,15 +80,30 @@ function safeSessionId(id: string): string | null {
   return /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : null;
 }
 
+function reqPath(url?: string): string {
+  if (!url) return "";
+  const q = url.indexOf("?");
+  return q === -1 ? url : url.slice(0, q);
+}
+
 function loadSession(stateDir: string, id: string, ttlMs: number): StateSession | null {
   const entry = sessions.get(id);
   if (entry) {
-    entry.lastAccess = Date.now();
-    return entry.session;
+    if (Date.now() - entry.lastAccess > ttlMs) {
+      sessions.delete(id);
+    } else {
+      entry.lastAccess = Date.now();
+      return entry.session;
+    }
   }
   const f = sessionFile(stateDir, id);
   if (existsSync(f)) {
     try {
+      const age = Date.now() - statSync(f).mtimeMs;
+      if (age > ttlMs) {
+        try { unlinkSync(f); } catch { /* best effort */ }
+        return null;
+      }
       const s = JSON.parse(readFileSync(f, "utf-8")) as StateSession;
       sessions.set(id, { session: s, lastAccess: Date.now() });
       return s;
@@ -209,6 +224,7 @@ async function callUpstream(
       ...(upstream.apiKey ? { authorization: `Bearer ${upstream.apiKey}` } : {}),
     },
     body,
+    signal: AbortSignal.timeout(180_000),
   } as any);
 
   const headers: Record<string, string> = {};
@@ -290,10 +306,11 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
         console.log(`[${ts}] ${req.method} ${req.url} from ${req.socket.remoteAddress}`);
       }
 
+      const path = reqPath(req.url);
       const isChat =
-        (req.url?.startsWith("/v1/chat/completions") || req.url?.startsWith("/v1/messages")) &&
+        (path === "/v1/chat/completions" || path === "/v1/messages") &&
         req.method === "POST";
-      const isModels = req.url?.startsWith("/v1/models") && req.method === "GET";
+      const isModels = path === "/v1/models" && req.method === "GET";
 
       // ── /v1/models ──
       if (isModels) {
@@ -310,7 +327,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
       }
 
       // ── /health ──
-      if (req.url?.startsWith("/health") || req.url?.startsWith("/v1/health")) {
+      if (path === "/health" || path === "/v1/health") {
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({
@@ -324,14 +341,20 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
       }
 
       // ── /state — inspect/reset a session's Σ (query: ?session=<sid>) ──
-      if (req.url?.startsWith("/state") || req.url?.startsWith("/v1/state")) {
-        const sidParam = new URL(req.url, "http://x").searchParams.get("session");
+      if (path === "/state" || path === "/v1/state") {
+        const sidParam = new URL(req.url ?? "/state", "http://x").searchParams.get("session");
         const safeSid = sidParam ? safeSessionId(sidParam) : null;
         if (req.method === "GET") {
           if (!sidParam) {
+            const ids = new Set<string>(sessions.keys());
+            try {
+              for (const name of readdirSync(config.stateDir)) {
+                if (name.endsWith(".json")) ids.add(name.slice(0, -5));
+              }
+            } catch { /* dir missing */ }
             res.statusCode = 200;
             res.setHeader("content-type", "application/json");
-            res.end(JSON.stringify({ sessions: [...sessions.keys()] }));
+            res.end(JSON.stringify({ sessions: [...ids] }));
             return;
           }
           if (!safeSid) { res.statusCode = 400; res.end(JSON.stringify({ error: "invalid session id" })); return; }
@@ -357,7 +380,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
       }
 
       // ── /cost ──
-      if (req.url?.startsWith("/cost") || req.url?.startsWith("/v1/cost")) {
+      if (path === "/cost" || path === "/v1/cost") {
         const s = ledger.summarize();
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
@@ -438,10 +461,17 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
         try {
           const upstreamRes = await callUpstream(u, "/v1/chat/completions", upstreamBody, stream);
 
-          if (upstreamRes.status >= 500) {
+          if (upstreamRes.status >= 500 || upstreamRes.status === 429) {
             breaker.recordFailure();
             lastErr = { status: upstreamRes.status, body: upstreamRes.body };
             continue;
+          }
+          if (upstreamRes.status >= 400) {
+            res.statusCode = upstreamRes.status;
+            res.setHeader("content-type", upstreamRes.headers["content-type"] ?? "application/json");
+            setCommonHeaders(res, sid, session, u.name, []);
+            res.end(upstreamRes.body);
+            return;
           }
 
           breaker.recordSuccess();
