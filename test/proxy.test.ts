@@ -15,7 +15,7 @@ import { rmSync, existsSync, readFileSync } from "node:fs";
 
 interface MockCall { path: string; body: any; }
 let mockCalls: MockCall[] = [];
-let mockMode: "ok-paper" | "ok-legacy" | "bad-then-good" | "auth-fail" = "ok-paper";
+let mockMode: "ok-paper" | "ok-legacy" | "bad-then-good" | "auth-fail" | "tool-call" = "ok-paper";
 let mockServer: Server | null = null;
 let mockPort = 0;
 
@@ -32,6 +32,22 @@ function startMock() {
         res.setHeader("content-type", "application/json");
         const step = mockCalls.length;
         if (req.url?.includes("/chat/completions")) {
+          if (mockMode === "tool-call") {
+            res.end(JSON.stringify({
+              id: "m-tool", object: "chat.completion", model: body.model ?? "x",
+              choices: [{
+                index: 0,
+                message: {
+                  role: "assistant",
+                  content: null,
+                  tool_calls: [{ id: "call_1", type: "function", function: { name: "list_dir", arguments: "{\"path\":\".\"}" } }],
+                },
+                finish_reason: "tool_calls",
+              }],
+              usage: { prompt_tokens: 40, completion_tokens: 12 },
+            }));
+            return;
+          }
           if (mockMode === "auth-fail") {
             res.statusCode = 401;
             res.end(JSON.stringify({ error: "missing or invalid API key" }));
@@ -318,5 +334,50 @@ describe("proxy: end-to-end with mock upstream", () => {
     });
     mockMode = prev;
     expect(r.status).toBe(401);
+  });
+
+  it("forwards tools to upstream and returns tool_calls without rollback-retry", async () => {
+    mockCalls = [];
+    mockMode = "tool-call";
+    const tools = [{ type: "function", function: { name: "list_dir", parameters: { type: "object", properties: { path: { type: "string" } } } } }];
+    const r = await fetch(`http://127.0.0.1:${proxyPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer test", "x-skillstate-session": "test-tools" },
+      body: JSON.stringify({
+        model: "test-model", stream: false, tools, tool_choice: "auto",
+        messages: [{ role: "system", content: "TASK: use tools" }, { role: "user", content: "list ." }],
+      }),
+    });
+    expect(r.status).toBe(200);
+    expect(r.headers.get("x-skillstate-retries")).toBeNull();
+    const j = await r.json();
+    expect(j.choices[0].finish_reason).toBe("tool_calls");
+    expect(j.choices[0].message.tool_calls[0].function.name).toBe("list_dir");
+    expect(mockCalls[0]!.body.tools).toEqual(tools);
+    expect(mockCalls[0]!.body.tool_choice).toBe("auto");
+    mockMode = "ok-paper";
+  });
+
+  it("encodes tool results as the latest observation", async () => {
+    mockCalls = [];
+    mockMode = "ok-paper";
+    const r = await fetch(`http://127.0.0.1:${proxyPort}/v1/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: "Bearer test", "x-skillstate-session": "test-tool-result" },
+      body: JSON.stringify({
+        model: "test-model", stream: false,
+        messages: [
+          { role: "system", content: "TASK: use tools" },
+          { role: "user", content: "list ." },
+          { role: "assistant", tool_calls: [{ id: "call_1", type: "function", function: { name: "list_dir", arguments: "{}" } }] },
+          { role: "tool", tool_call_id: "call_1", name: "list_dir", content: "src\\nREADME.md" },
+        ],
+      }),
+    });
+    expect(r.status).toBe(200);
+    const user = mockCalls[0]!.body.messages[1].content as string;
+    expect(user).toContain("call_1");
+    expect(user).toContain("list_dir");
+    expect(user).toContain("README.md");
   });
 });

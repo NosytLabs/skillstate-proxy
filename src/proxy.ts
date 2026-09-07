@@ -160,15 +160,38 @@ function isStreamRequest(body: any): boolean {
   return body?.stream === true;
 }
 
+function observationFromMessage(msg: any): string {
+  if (!msg) return "";
+  if (msg.role === "tool") {
+    return JSON.stringify({
+      role: "tool",
+      tool_call_id: msg.tool_call_id,
+      name: msg.name,
+      content: msg.content ?? "",
+    });
+  }
+  if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+    return JSON.stringify({
+      role: "assistant",
+      content: msg.content ?? "",
+      tool_calls: msg.tool_calls,
+    });
+  }
+  if (typeof msg.content === "string") return msg.content;
+  return JSON.stringify(msg.content ?? "");
+}
+
 function rewriteBody(body: any, session: StateSession): { body: any; observation: string } {
   const messages: any[] = body.messages ?? [];
   const obsMsg = [...messages].reverse().find((m: any) => m.role !== "system");
-  const observation: string = typeof obsMsg?.content === "string" ? obsMsg.content : JSON.stringify(obsMsg?.content ?? "");
+  const observation = observationFromMessage(obsMsg);
   const { system, user } = buildStepPrompt(session, observation);
-  // Strip top-level `system` field (Anthropic sends it separately)
-  const { system: _drop, ...rest } = body;
+  const { system: _drop, messages: _msgs, ...rest } = body;
   return {
-    body: { ...rest, messages: [{ role: "system", content: system }, { role: "user", content: user }] },
+    body: {
+      ...rest,
+      messages: [{ role: "system", content: system }, { role: "user", content: user }],
+    },
     observation,
   };
 }
@@ -453,7 +476,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
           return;
         }
 
-        if (breaker.getState() === "open") {
+        if (!breaker.canAttempt()) {
           lastErr = { status: 503, body: JSON.stringify({ error: `circuit[${u.name}] open` }) };
           continue;
         }
@@ -518,8 +541,11 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
           let ex = extractDelta(content);
           let delta = ex.delta;
           let modelRawJson = upstreamJson;
+          const toolCalls = upstreamJson.choices?.[0]?.message?.tool_calls;
+          const hasToolCalls = Array.isArray(toolCalls) && toolCalls.length > 0;
 
-          while (ex.format !== "paper" && attempts < maxRetries && content.length > 0) {
+          // Tool-calling turns are first-class: do not rollback-retry them into a state_patch.
+          while (!hasToolCalls && ex.format !== "paper" && attempts < maxRetries && content.length > 0) {
             try {
               const parsed = JSON.parse(lastRetriedBody);
               const um = parsed?.messages?.[1];

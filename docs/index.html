@@ -79,6 +79,7 @@
       <h2>What it includes</h2>
       <ul class="grid">
         <li><strong>Drop-in proxy</strong> — point <code>base_url</code> at it; OpenAI and Anthropic SDKs work.</li>
+        <li><strong>Tool calls</strong> — <code>tools</code> / <code>tool_calls</code> pass through; tool results become the latest observation.</li>
         <li><strong>Streaming</strong> — SSE passthrough; state updates server-side.</li>
         <li><strong>Anthropic translation</strong> — <code>/v1/messages</code> to OpenAI format and back.</li>
         <li><strong>Failover</strong> — multi-upstream routing with circuit breaker and rate limiter.</li>
