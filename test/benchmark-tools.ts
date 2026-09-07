@@ -5,15 +5,15 @@
  * executes those locally and sends role:tool results back. Prompt tokens
  * come from upstream usage.
  *
- *   SKILLSTATE_API_KEY=... SKILLSTATE_UPSTREAM=https://api.openbroker.gonka.gg/v1 \
- *   SKILLSTATE_MODEL=MiniMaxAI/MiniMax-M2.7 npx tsx test/benchmark-tools.ts 20
+ *   SKILLSTATE_API_KEY=... SKILLSTATE_UPSTREAM=https://api.venice.ai/api/v1 \
+ *   SKILLSTATE_MODEL=qwen3-5-9b npx tsx test/benchmark-tools.ts 20
  */
 import { startProxy } from "../src/proxy.js";
 import { costFor, gonkaCost } from "../src/pricing.js";
 
 const API_KEY = process.env.SKILLSTATE_API_KEY;
-const UPSTREAM = process.env.SKILLSTATE_UPSTREAM ?? "https://api.openbroker.gonka.gg/v1";
-const MODEL = process.env.SKILLSTATE_MODEL ?? "MiniMaxAI/MiniMax-M2.7";
+const UPSTREAM = process.env.SKILLSTATE_UPSTREAM ?? "https://api.venice.ai/api/v1";
+const MODEL = process.env.SKILLSTATE_MODEL ?? "qwen3-5-9b";
 const N = Number(process.argv[2] ?? 20);
 
 if (!API_KEY) {

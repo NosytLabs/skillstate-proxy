@@ -211,9 +211,7 @@ LangGraph checkpoints save the **whole graph including messages** — resume, no
 
 Official Headroom: default `--mode cache`, profile `coding`. For OpenBroker/MiniMax: `--backend anyllm --mode token --no-ccr`.
 
-Optional stack: `agent → skillstate :8789 → headroom :8787 → Gonka MiniMax-M2.7`.
-
-Hermes `auxiliary.headroom` on this machine is a **named Gonka route**, not the Headroom binary. No Headroom git checkout under `~/Desktop/Code`.
+Optional stack: `agent → skillstate :8789 → headroom :8787 → your upstream`.
 
 ### Accuracy & robustness (paper benchmarks)
 
@@ -553,7 +551,6 @@ references/
   skill-state-paper.md  Paper summary with implementation checklist
 skillstate.json.example  Safe config template (copy to gitignored skillstate.json)
 SECURITY.md           How to report issues; never commit keys
-audit_demo.py         Optional long-horizon audit against a running proxy
 ```
 
 ---
