@@ -21,8 +21,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Refresh lockfile
-        run: npm install --package-lock-only --ignore-scripts
+      - name: Regenerate lockfile
+        run: |
+          rm package-lock.json
+          npm install --package-lock-only --ignore-scripts
       - name: Install dependencies
         run: npm ci
       - name: Build
