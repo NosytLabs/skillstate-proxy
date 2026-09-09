@@ -1,0 +1,44 @@
+name: Vitest upgrade verification
+
+on:
+  push:
+    branches:
+      - cleanup/update-vitest
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: cleanup/update-vitest
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Refresh lockfile
+        run: npm install --package-lock-only --ignore-scripts
+      - name: Install dependencies
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Test
+        run: npm test
+      - name: Audit dependencies
+        run: npm audit --audit-level=moderate
+      - name: Commit refreshed lockfile
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json
+          if git diff --cached --quiet; then
+            echo "Dependency metadata already current"
+            exit 0
+          fi
+          git commit -m "Refresh lockfile after Vitest upgrade"
+          git push
