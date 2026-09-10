@@ -36,7 +36,10 @@ export class CostLedger {
 
   record(row: CostRow): void {
     try {
-      appendFileSync(this.path, JSON.stringify(row) + "\n", "utf-8");
+      const normalized: CostRow = row.pricingStatus === "unknown"
+        ? { ...row, costUsd: undefined }
+        : row;
+      appendFileSync(this.path, JSON.stringify(normalized) + "\n", "utf-8");
     } catch (err: any) {
       console.error(`[skillstate] cost-ledger: failed to write: ${err?.message ?? err}`);
     }
@@ -63,7 +66,9 @@ export class CostLedger {
 
         const input = Number.isFinite(row.inputTokens) ? row.inputTokens : 0;
         const output = Number.isFinite(row.outputTokens) ? row.outputTokens : 0;
-        const knownUsd = typeof row.costUsd === "number" && Number.isFinite(row.costUsd);
+        const knownUsd = row.pricingStatus !== "unknown"
+          && typeof row.costUsd === "number"
+          && Number.isFinite(row.costUsd);
 
         if (knownUsd) {
           summary.totalUsd += row.costUsd!;
