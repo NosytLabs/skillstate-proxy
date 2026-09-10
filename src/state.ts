@@ -15,17 +15,11 @@
 export type StateValueKind = "string" | "number" | "boolean" | "array" | "object";
 
 export interface StateSession {
-  /** Immutable procedural spec P (set once, usually the system message). */
   spec: string;
-  /** Mutable structured execution state Σ. */
   state: Record<string, unknown>;
-  /** Schema keys the state is allowed to carry (authored per domain). */
   schema: string[];
-  /** Top-level type contract inferred at session creation when possible. */
   stateTypes?: Record<string, StateValueKind>;
-  /** Step counter. */
   step: number;
-  /** Whether the session has been bootstrapped (spec + initial state set). */
   initialized: boolean;
 }
 
@@ -53,7 +47,6 @@ export interface TransitionValidationResult {
   errors: string[];
 }
 
-/** Dictionary merge with null-deletion semantics. */
 export function mergeState(
   base: Record<string, unknown>,
   delta: Record<string, unknown>,
@@ -92,7 +85,9 @@ function plainObject(v: unknown): v is Record<string, unknown> {
 function valueKind(v: unknown): StateValueKind | undefined {
   if (Array.isArray(v)) return "array";
   if (v !== null && typeof v === "object") return "object";
-  if (typeof v === "string" || typeof v === "number" || typeof v === "boolean") return typeof v;
+  if (typeof v === "string") return "string";
+  if (typeof v === "number") return "number";
+  if (typeof v === "boolean") return "boolean";
   return undefined;
 }
 
@@ -114,11 +109,6 @@ function serializedBytes(value: unknown): number | null {
   }
 }
 
-/**
- * Strict parser used by the proxy before persistent state mutation.
- * The transition envelope has exactly state_patch and action; aliases/legacy
- * forms remain supported only by extractDelta() for library backwards compatibility.
- */
 export function parsePaperTransition(text: string): ParsedPaperTransition {
   let candidateText = text.trim();
   let reasoning = "";
@@ -156,7 +146,6 @@ export function parsePaperTransition(text: string): ParsedPaperTransition {
   };
 }
 
-/** Validate a proposed transition without mutating the live session. */
 export function validateTransition(
   session: StateSession,
   transition: PaperTransition,
@@ -210,18 +199,11 @@ export function validateTransition(
   return errors.length ? { ok: false, errors } : { ok: true, candidateState, errors: [] };
 }
 
-/** Commit one already-validated logical transition. */
 export function commitTransition(session: StateSession, candidateState: Record<string, unknown>): void {
   session.state = structuredClone(candidateState);
   session.step += 1;
 }
 
-/**
- * Extract a structured ΔΣ from a model's text output.
- *
- * This is the permissive compatibility parser exposed by the library. The proxy
- * uses parsePaperTransition() when deciding whether persistent state may change.
- */
 export function extractDelta(text: string): {
   delta: Record<string, unknown>;
   action?: string;
@@ -293,7 +275,6 @@ export function extractDelta(text: string): {
   return { delta, action, reasoning, valid, format };
 }
 
-/** Build the prompt the upstream model receives: (P, Σ, O) only. */
 export function buildStepPrompt(
   session: StateSession,
   observation: string,
@@ -323,10 +304,6 @@ export function buildStepPrompt(
   return { system: sys, user: usr };
 }
 
-/**
- * Backwards-compatible direct delta application. Proxy orchestration should use
- * validateTransition() + commitTransition() instead.
- */
 export function applyDelta(
   session: StateSession,
   delta: Record<string, unknown>,
