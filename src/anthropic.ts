@@ -230,3 +230,157 @@ export function denormalizeResponse(normalized: NormalizedRequest, openAIJson: a
       : undefined,
   };
 }
+
+function anthropicSse(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+type StreamTool = {
+  contentIndex: number;
+  started: boolean;
+  id: string;
+  name: string;
+  pendingArguments: string;
+};
+
+/** Incrementally translate OpenAI ChatCompletion SSE data payloads to Anthropic Messages SSE. */
+export class AnthropicStreamAdapter {
+  private started = false;
+  private finalized = false;
+  private nextContentIndex = 0;
+  private textIndex: number | undefined;
+  private finish = "end_turn";
+  private inputTokens = 0;
+  private outputTokens = 0;
+  private readonly openBlocks = new Set<number>();
+  private readonly tools = new Map<number, StreamTool>();
+
+  constructor(private readonly model: string, private readonly id = "msg_skillstate") {}
+
+  private startMessage(): string[] {
+    if (this.started) return [];
+    this.started = true;
+    return [anthropicSse("message_start", {
+      type: "message_start",
+      message: {
+        id: this.id,
+        type: "message",
+        role: "assistant",
+        model: this.model,
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: this.inputTokens, output_tokens: 0 },
+      },
+    })];
+  }
+
+  private ensureTextBlock(out: string[]): number {
+    if (this.textIndex !== undefined) return this.textIndex;
+    const index = this.nextContentIndex++;
+    this.textIndex = index;
+    this.openBlocks.add(index);
+    out.push(anthropicSse("content_block_start", {
+      type: "content_block_start",
+      index,
+      content_block: { type: "text", text: "" },
+    }));
+    return index;
+  }
+
+  private ensureToolBlock(toolIndex: number, part: any, out: string[]): StreamTool {
+    let tool = this.tools.get(toolIndex);
+    if (!tool) {
+      tool = {
+        contentIndex: this.nextContentIndex++,
+        started: false,
+        id: "",
+        name: "",
+        pendingArguments: "",
+      };
+      this.tools.set(toolIndex, tool);
+    }
+    if (typeof part?.id === "string") tool.id = part.id;
+    if (typeof part?.function?.name === "string") tool.name += part.function.name;
+
+    if (!tool.started && tool.id && tool.name) {
+      tool.started = true;
+      this.openBlocks.add(tool.contentIndex);
+      out.push(anthropicSse("content_block_start", {
+        type: "content_block_start",
+        index: tool.contentIndex,
+        content_block: { type: "tool_use", id: tool.id, name: tool.name, input: {} },
+      }));
+      if (tool.pendingArguments) {
+        out.push(anthropicSse("content_block_delta", {
+          type: "content_block_delta",
+          index: tool.contentIndex,
+          delta: { type: "input_json_delta", partial_json: tool.pendingArguments },
+        }));
+        tool.pendingArguments = "";
+      }
+    }
+    return tool;
+  }
+
+  push(data: string): string[] {
+    if (this.finalized) return [];
+    if (data === "[DONE]") return this.finalize();
+
+    let json: any;
+    try { json = JSON.parse(data); }
+    catch { return []; }
+
+    if (json.usage) {
+      this.inputTokens = json.usage.prompt_tokens ?? json.usage.input_tokens ?? this.inputTokens;
+      this.outputTokens = json.usage.completion_tokens ?? json.usage.output_tokens ?? this.outputTokens;
+    }
+
+    const out = this.startMessage();
+    for (const choice of json.choices ?? []) {
+      if (choice?.finish_reason) this.finish = stopReason(choice.finish_reason);
+      const delta = choice?.delta ?? {};
+      if (typeof delta.content === "string" && delta.content.length) {
+        const index = this.ensureTextBlock(out);
+        out.push(anthropicSse("content_block_delta", {
+          type: "content_block_delta",
+          index,
+          delta: { type: "text_delta", text: delta.content },
+        }));
+      }
+      for (const [fallbackIndex, part] of (delta.tool_calls ?? []).entries()) {
+        const toolIndex = Number.isInteger(part?.index) ? part.index : fallbackIndex;
+        const tool = this.ensureToolBlock(toolIndex, part, out);
+        const args = typeof part?.function?.arguments === "string" ? part.function.arguments : "";
+        if (args) {
+          if (!tool.started) {
+            tool.pendingArguments += args;
+          } else {
+            out.push(anthropicSse("content_block_delta", {
+              type: "content_block_delta",
+              index: tool.contentIndex,
+              delta: { type: "input_json_delta", partial_json: args },
+            }));
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  private finalize(): string[] {
+    if (this.finalized) return [];
+    const out = this.startMessage();
+    for (const index of [...this.openBlocks].sort((a, b) => a - b)) {
+      out.push(anthropicSse("content_block_stop", { type: "content_block_stop", index }));
+    }
+    out.push(anthropicSse("message_delta", {
+      type: "message_delta",
+      delta: { stop_reason: this.finish, stop_sequence: null },
+      usage: { output_tokens: this.outputTokens },
+    }));
+    out.push(anthropicSse("message_stop", { type: "message_stop" }));
+    this.finalized = true;
+    return out;
+  }
+}
