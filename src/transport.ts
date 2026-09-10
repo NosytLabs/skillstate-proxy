@@ -1,6 +1,7 @@
 import type { CircuitBreaker } from "./circuit-breaker.js";
 import type { RateLimiter } from "./rate-limiter.js";
 import { buildUpstreamHeaders } from "./headers.js";
+import { extractUsage } from "./token-estimate.js";
 
 export interface TransportUpstream {
   name: string;
@@ -17,6 +18,9 @@ export interface TransportAttempt {
   error?: string;
   localRateLimit?: boolean;
   circuitOpen?: boolean;
+  model?: string;
+  inputTokens?: number;
+  outputTokens?: number;
 }
 
 export interface RequestUpstreamOptions {
@@ -123,6 +127,14 @@ function isRetryable(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
+function addUsage(attempt: TransportAttempt, body: string): void {
+  const usage = extractUsage(body);
+  if (!usage) return;
+  attempt.model = usage.model;
+  attempt.inputTokens = usage.inputTokens;
+  attempt.outputTokens = usage.outputTokens;
+}
+
 export async function requestUpstream(options: RequestUpstreamOptions): Promise<SelectedUpstream> {
   const attempts: TransportAttempt[] = [];
   let lastStatus = 502;
@@ -149,7 +161,6 @@ export async function requestUpstream(options: RequestUpstreamOptions): Promise<
         break;
       }
 
-      // Reserve RPM/TPM before the network call so failed attempts still count.
       limiter.record(options.estimatedTokens);
       const lifecycle = attemptController(options.connectTimeoutMs, options.requestTimeoutMs, options.signal);
       let response: Response;
@@ -174,12 +185,14 @@ export async function requestUpstream(options: RequestUpstreamOptions): Promise<
         break;
       }
 
-      attempts.push({ upstream: upstream.name, attempt, status: response.status });
+      const attemptRow: TransportAttempt = { upstream: upstream.name, attempt, status: response.status };
+      attempts.push(attemptRow);
 
       if (isRetryable(response.status)) {
         breaker.recordFailure();
         lastStatus = response.status;
         lastBody = await response.text();
+        addUsage(attemptRow, lastBody);
         const delay = retryAfterMs(response.headers.get("retry-after"), options.retryAfterCapMs, attempt);
         lifecycle.finish();
         if (attempt < options.retryMaxAttempts) {
@@ -192,6 +205,7 @@ export async function requestUpstream(options: RequestUpstreamOptions): Promise<
       if (response.status === 401 || response.status === 403) {
         lastStatus = response.status;
         lastBody = await response.text();
+        addUsage(attemptRow, lastBody);
         lifecycle.finish();
         break;
       }
