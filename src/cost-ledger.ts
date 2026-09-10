@@ -7,8 +7,11 @@ export interface CostRow {
   model: string;
   inputTokens: number;
   outputTokens: number;
-  costUsd: number;
+  /** Omitted when model/upstream pricing is unknown. */
+  costUsd?: number;
   costGnk?: number;
+  pricingStatus?: "known" | "unknown" | "local-zero" | "usage-unavailable";
+  attemptKind?: "generation" | "rollback-retry" | "transport-retry" | "stream";
   promptTokensViaSkillstate?: number;
   savedTokens?: number;
 }
@@ -18,6 +21,8 @@ export interface CostSummary {
   totalGnk: number;
   byModel: Record<string, { cost: number; tokens: number }>;
   byUpstream: Record<string, number>;
+  unknownPricingRows: number;
+  byAttemptKind: Record<string, number>;
 }
 
 export class CostLedger {
@@ -38,31 +43,45 @@ export class CostLedger {
   }
 
   summarize(windowMs = 24 * 60 * 60 * 1000): CostSummary {
-    if (!existsSync(this.path)) return { totalUsd: 0, totalGnk: 0, byModel: {}, byUpstream: {} };
-    const cutoff = Date.now() - windowMs;
-    let totalUsd = 0;
-    let totalGnk = 0;
-    const byModel: Record<string, { cost: number; tokens: number }> = {};
-    const byUpstream: Record<string, number> = {};
+    const empty = (): CostSummary => ({
+      totalUsd: 0,
+      totalGnk: 0,
+      byModel: {},
+      byUpstream: {},
+      unknownPricingRows: 0,
+      byAttemptKind: {},
+    });
+    if (!existsSync(this.path)) return empty();
 
+    const cutoff = Date.now() - windowMs;
+    const summary = empty();
     for (const line of readFileSync(this.path, "utf-8").split("\n").filter(Boolean)) {
       try {
-        const r = JSON.parse(line) as CostRow;
-        if (new Date(r.ts).getTime() < cutoff) continue;
-        if (r.costUsd !== undefined && r.costUsd !== null && Number.isFinite(r.costUsd)) {
-          totalUsd += r.costUsd;
-          if (r.upstream) byUpstream[r.upstream] = (byUpstream[r.upstream] ?? 0) + r.costUsd;
+        const row = JSON.parse(line) as CostRow;
+        const ts = new Date(row.ts).getTime();
+        if (!Number.isFinite(ts) || ts < cutoff) continue;
+
+        const input = Number.isFinite(row.inputTokens) ? row.inputTokens : 0;
+        const output = Number.isFinite(row.outputTokens) ? row.outputTokens : 0;
+        const knownUsd = typeof row.costUsd === "number" && Number.isFinite(row.costUsd);
+
+        if (knownUsd) {
+          summary.totalUsd += row.costUsd!;
+          if (row.upstream) summary.byUpstream[row.upstream] = (summary.byUpstream[row.upstream] ?? 0) + row.costUsd!;
         }
-        if (r.costGnk !== undefined && r.costGnk !== null && Number.isFinite(r.costGnk)) totalGnk += r.costGnk;
-        if (r.model) {
-          if (!byModel[r.model]) byModel[r.model] = { cost: 0, tokens: 0 };
-          byModel[r.model]!.cost += r.costUsd && Number.isFinite(r.costUsd) ? r.costUsd : 0;
-          byModel[r.model]!.tokens += (r.inputTokens || 0) + (r.outputTokens || 0);
+        if (typeof row.costGnk === "number" && Number.isFinite(row.costGnk)) summary.totalGnk += row.costGnk;
+        if (row.pricingStatus === "unknown") summary.unknownPricingRows += 1;
+        if (row.attemptKind) summary.byAttemptKind[row.attemptKind] = (summary.byAttemptKind[row.attemptKind] ?? 0) + 1;
+
+        if (row.model) {
+          if (!summary.byModel[row.model]) summary.byModel[row.model] = { cost: 0, tokens: 0 };
+          summary.byModel[row.model]!.tokens += input + output;
+          if (knownUsd) summary.byModel[row.model]!.cost += row.costUsd!;
         }
       } catch {
-        // malformed line — skip
+        // Malformed lines are skipped so one partial write cannot break /cost.
       }
     }
-    return { totalUsd, totalGnk, byModel, byUpstream };
+    return summary;
   }
 }
