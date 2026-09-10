@@ -34,7 +34,12 @@ import {
 import { SessionStore, safeSessionId } from "./session-store.js";
 import { corsHeaders } from "./headers.js";
 import { normalizeConfigValues, HARDENING_DEFAULTS } from "./config.js";
-import { requestUpstream, TransportError, type SelectedUpstream } from "./transport.js";
+import {
+  requestUpstream,
+  TransportError,
+  type SelectedUpstream,
+  type TransportAttempt,
+} from "./transport.js";
 import { OpenAIStreamObserver, SseParser } from "./sse.js";
 
 export interface UpstreamConfig {
@@ -222,8 +227,6 @@ function evaluateTransition(
         commitTransition(session, validation.candidateState);
         return { status: "valid", errors: [], action: parsed.transition.action, committed: true };
       }
-      // The client-visible native tool call is already an action. Do not regenerate it
-      // solely because an accompanying state patch was invalid; advance as a no-op.
       commitTransition(session, session.state);
       return { status: "tool-noop", errors: validation.errors, committed: true };
     }
@@ -264,6 +267,29 @@ function modelFromBody(body: any, fallback = ""): string {
   return typeof body?.model === "string" ? body.model : fallback;
 }
 
+function addMeteredCost(
+  totals: MeterTotals,
+  upstream: UpstreamConfig,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+): { costUsd?: number; costGnk?: number; pricingStatus: "known" | "unknown" | "local-zero" } {
+  const pricing = lookupPricing(model, upstream.pricing);
+  const usd = pricing.costFor(inputTokens, outputTokens);
+  if (usd === null) totals.unknownPricing = true;
+  else {
+    totals.knownUsd += usd;
+    totals.knownUsdRows += 1;
+  }
+  const gnk = upstream.currency === "gnk" ? gonkaCost(inputTokens + outputTokens).gnk : undefined;
+  if (gnk !== undefined) totals.knownGnk += gnk;
+  return {
+    ...(usd !== null ? { costUsd: usd } : {}),
+    ...(gnk !== undefined ? { costGnk: gnk } : {}),
+    pricingStatus: pricing.status,
+  };
+}
+
 function meterGeneration(
   ledger: CostLedger,
   totals: MeterTotals,
@@ -277,27 +303,43 @@ function meterGeneration(
     totals.usageUnavailable = true;
     return { inputTokens: 0, outputTokens: 0 };
   }
-  const pricing = lookupPricing(model || usage.model, upstream.pricing);
-  const usd = pricing.costFor(usage.inputTokens, usage.outputTokens);
-  if (usd === null) totals.unknownPricing = true;
-  else {
-    totals.knownUsd += usd;
-    totals.knownUsdRows += 1;
-  }
-  const gnk = upstream.currency === "gnk" ? gonkaCost(usage.inputTokens + usage.outputTokens).gnk : undefined;
-  if (gnk !== undefined) totals.knownGnk += gnk;
-
+  const usedModel = model || usage.model;
+  const costs = addMeteredCost(totals, upstream, usedModel, usage.inputTokens, usage.outputTokens);
   ledger.record({
     ts: new Date().toISOString(),
     upstream: upstream.name,
-    model: model || usage.model,
+    model: usedModel,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
-    costUsd: usd ?? 0,
-    costGnk: gnk,
-    ...({ pricingStatus: pricing.status, attemptKind } as any),
+    ...costs,
+    attemptKind,
   });
   return { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens };
+}
+
+function meterTransportAttempts(
+  ledger: CostLedger,
+  totals: MeterTotals,
+  attempts: TransportAttempt[],
+  configuredUpstreams: UpstreamConfig[],
+  fallbackModel: string,
+): void {
+  for (const attempt of attempts) {
+    if (typeof attempt.inputTokens !== "number" || typeof attempt.outputTokens !== "number") continue;
+    const upstream = configuredUpstreams.find(candidate => candidate.name === attempt.upstream);
+    if (!upstream) continue;
+    const model = attempt.model || fallbackModel;
+    const costs = addMeteredCost(totals, upstream, model, attempt.inputTokens, attempt.outputTokens);
+    ledger.record({
+      ts: new Date().toISOString(),
+      upstream: upstream.name,
+      model,
+      inputTokens: attempt.inputTokens,
+      outputTokens: attempt.outputTokens,
+      ...costs,
+      attemptKind: "transport-retry",
+    });
+  }
 }
 
 function costHeaders(totals: MeterTotals): Record<string, string> {
@@ -317,7 +359,7 @@ async function writeChunk(res: ServerResponse, chunk: Uint8Array | string): Prom
 
 export interface ProxyResult {
   port: number;
-  close: () => void;
+  close: () => Promise<void>;
   ledger: CostLedger;
   server: Server;
 }
@@ -529,11 +571,13 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
         let selected: SelectedUpstream;
         try {
           selected = await transport(req, requestBody, estimated);
+          meterTransportAttempts(ledger, totals, selected.attempts, upstreams, modelFromBody(body));
         } catch (error) {
           if (error instanceof TransportError) {
+            meterTransportAttempts(ledger, totals, error.attempts, upstreams, modelFromBody(body));
             res.statusCode = error.status;
             res.setHeader("content-type", "application/json");
-            setCommonHeaders(res, sid, session, "none", "invalid", [error.message]);
+            setCommonHeaders(res, sid, session, "none", "invalid", [error.message], costHeaders(totals));
             res.end(error.body);
             return;
           }
@@ -543,7 +587,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
         if (selected.response.status >= 400) {
           res.statusCode = selected.response.status;
           copyUpstreamResponseHeaders(selected.response, res);
-          setCommonHeaders(res, sid, session, selected.upstream.name, "invalid");
+          setCommonHeaders(res, sid, session, selected.upstream.name, "invalid", [], costHeaders(totals));
           const text = await selected.response.text();
           selected.finish();
           res.end(text);
@@ -560,7 +604,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
           res.statusCode = selected.response.status;
           copyUpstreamResponseHeaders(selected.response, res);
           res.setHeader("content-type", isAnthropic ? "text/event-stream" : contentType);
-          setCommonHeaders(res, sid, session, upstream.name, "pending");
+          setCommonHeaders(res, sid, session, upstream.name, "pending", [], costHeaders(totals));
 
           const onClose = () => {
             if (!res.writableEnded) selected.controller.abort(new Error("downstream client disconnected"));
@@ -626,7 +670,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
         catch {
           res.statusCode = selected.response.status;
           copyUpstreamResponseHeaders(selected.response, res);
-          setCommonHeaders(res, sid, session, selected.upstream.name, "invalid", ["upstream response was not JSON"]);
+          setCommonHeaders(res, sid, session, selected.upstream.name, "invalid", ["upstream response was not JSON"], costHeaders(totals));
           res.end(finalText);
           return;
         }
@@ -644,8 +688,12 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
           let retrySelected: SelectedUpstream;
           try {
             retrySelected = await transport(req, requestBody, estimateTokens(requestBody));
+            meterTransportAttempts(ledger, totals, retrySelected.attempts, upstreams, modelFromBody(body, finalJson?.model));
           } catch (error) {
-            if (error instanceof TransportError) break;
+            if (error instanceof TransportError) {
+              meterTransportAttempts(ledger, totals, error.attempts, upstreams, modelFromBody(body, finalJson?.model));
+              break;
+            }
             throw error;
           }
           if (retrySelected.response.status >= 400) {
@@ -670,8 +718,6 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
           meterGeneration(ledger, totals, retrySelected.upstream as UpstreamConfig, modelFromBody(body, finalJson?.model), retryText, "rollback-retry");
         }
 
-        // Re-evaluate exactly once against the live session only after the final
-        // candidate is known. This is the transactional commit point.
         transition = evaluateTransition(session, content, toolCalls, config);
         if (transition.committed) store.save(sid, session);
 
@@ -714,10 +760,15 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
       console.log(`[skillstate] state dir: ${config.stateDir}`);
       resolve({
         port,
-        close: () => {
+        close: () => new Promise<void>(closeResolve => {
           store.close();
-          server.close();
-        },
+          if (!server.listening) {
+            closeResolve();
+            return;
+          }
+          server.close(() => closeResolve());
+          server.closeIdleConnections?.();
+        }),
         ledger,
         server,
       });
