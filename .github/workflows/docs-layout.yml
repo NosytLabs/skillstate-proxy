@@ -1,0 +1,37 @@
+name: Documentation layout
+
+on:
+  pull_request:
+    paths: ['docs/**', 'README.md', 'scripts/check_docs_layout.py', '.github/workflows/docs-layout.yml']
+  push:
+    branches: [main]
+    paths: ['docs/**', 'README.md', 'scripts/check_docs_layout.py', '.github/workflows/docs-layout.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  layout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install isolated browser test dependencies
+        run: |
+          python3 -m venv "$RUNNER_TEMP/docs-venv"
+          "$RUNNER_TEMP/docs-venv/bin/python" -m pip install playwright==1.57.0
+          "$RUNNER_TEMP/docs-venv/bin/python" -m playwright install --with-deps chromium
+      - name: Check actual documentation at four viewport sizes
+        run: |
+          "$RUNNER_TEMP/docs-venv/bin/python" scripts/check_docs_layout.py
+          git rev-parse HEAD > /tmp/skillstate-docs-layout/revision.txt
+          sha256sum docs/index.html docs/styles.css README.md > /tmp/skillstate-docs-layout/sources.sha256
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: documentation-layout
+          path: /tmp/skillstate-docs-layout
+          retention-days: 7
+          if-no-files-found: ignore
