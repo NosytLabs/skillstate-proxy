@@ -135,7 +135,8 @@ export function extractDelta(text: string): {
   }
 
   // 2. inline @state / STATE: marker (legacy)
-  if (Object.keys(delta).length === 0) {
+  // An empty patch is a successful no-op, not a reason to try another format.
+  if (format === "none") {
     const inline = text.match(/(?:@state|STATE:|ΔΣ:|DELTA:)\s*(\{[\s\S]*?\})\s*(?:\n|$)/i);
     if (inline) {
       const parsed = tryJson(inline[1]);
@@ -147,7 +148,7 @@ export function extractDelta(text: string): {
   }
 
   // 3. whole-output JSON
-  if (Object.keys(delta).length === 0) {
+  if (format === "none") {
     const whole = tryJson(text.trim());
     if (whole && typeof whole === "object" && !Array.isArray(whole)) {
       const obj = whole as Record<string, unknown>;
