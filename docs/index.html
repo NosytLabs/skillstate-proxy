@@ -56,6 +56,10 @@
   },
   "action": "Continue with validation"
 }</code></pre>
+      <p>A <code>state_patch</code> must be a JSON object, not null, an array or a scalar.
+        <code>"state_patch": {}</code> is a valid no-op. A recognized empty patch is not replaced
+        by a later legacy marker. When multiple fenced objects are present, the first valid
+        wrapped patch wins; actions from different blocks are not combined.</p>
       <p>This is <strong>not a lossless transcript archive</strong>. Facts omitted from state may disappear from later requests. Arrays replace previous arrays; resend the full list when it must survive. A null patch value deletes its key.</p>
     </section>
     <section id="install" aria-labelledby="install-title">
