@@ -3,187 +3,141 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>skillstate-proxy — cut LLM prompt tokens 60–95% for long-horizon agents</title>
-  <meta name="description" content="Drop-in OpenAI- and Anthropic-compatible HTTP proxy. Replaces growing chat history with SKILL.state structured state. Cuts prompt tokens 60–95% on long agent loops. MIT, Node 20+, zero runtime deps.">
-  <meta name="keywords" content="LLM proxy, token savings, SKILL.state, Headroom, MiniMax, OpenAI compatible, Anthropic, OpenRouter, Gonka, agent memory, prompt compression, long-horizon agents">
+  <title>skillstate-proxy — structured state for agent workflows</title>
+  <meta name="description" content="A local HTTP proxy that replaces selected conversation history with explicit structured state. Installation, API reference, limitations and verification guidance.">
   <meta name="robots" content="index,follow">
   <meta name="theme-color" content="#0e1110">
   <link rel="canonical" href="https://nosytlabs.github.io/skillstate-proxy/">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://nosytlabs.github.io/skillstate-proxy/">
-  <meta property="og:title" content="skillstate-proxy — cut LLM prompt tokens 60–95%">
-  <meta property="og:description" content="Drop-in OpenAI-compatible proxy that keeps long-horizon agents cheap and accurate. Implements SKILL.state (arXiv:2608.26263).">
+  <meta property="og:title" content="skillstate-proxy — structured state for agent workflows">
+  <meta property="og:description" content="Local software, not a hosted API. Learn the state contract, setup and limits before using the proxy.">
   <meta property="og:locale" content="en_US">
   <meta name="twitter:card" content="summary">
-  <meta name="twitter:title" content="skillstate-proxy — cut LLM prompt tokens 60–95%">
-  <meta name="twitter:description" content="Drop-in HTTP proxy. Bounded state instead of growing transcripts. MIT.">
+  <meta name="twitter:title" content="skillstate-proxy — structured state for agent workflows">
+  <meta name="twitter:description" content="Local software with explicit state. Savings and compatibility depend on your workload.">
   <script type="application/ld+json">
-  {"@context":"https://schema.org","@type":"SoftwareApplication","name":"skillstate-proxy","applicationCategory":"DeveloperApplication","operatingSystem":"Node.js >= 20","license":"https://opensource.org/licenses/MIT","url":"https://nosytlabs.github.io/skillstate-proxy/","codeRepository":"https://github.com/NosytLabs/skillstate-proxy","description":"OpenAI-compatible proxy that replaces growing conversation history with SKILL.state structured state to cut prompt tokens 60-95% on long-horizon LLM agents.","offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+  {"@context":"https://schema.org","@type":"SoftwareApplication","name":"skillstate-proxy","applicationCategory":"DeveloperApplication","operatingSystem":"Node.js","license":"https://opensource.org/licenses/MIT","url":"https://nosytlabs.github.io/skillstate-proxy/","codeRepository":"https://github.com/NosytLabs/skillstate-proxy","description":"Local HTTP proxy for explicit structured state in agent workflows."}
   </script>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="top">
-    <a class="mark" href="./">skillstate-proxy</a>
-    <nav>
-      <a href="#install">Install</a>
-      <a href="#api">API</a>
-      <a href="#config">Config</a>
-      <a href="https://github.com/NosytLabs/skillstate-proxy">GitHub</a>
-      <a href="https://www.npmjs.com/package/skillstate-proxy">npm</a>
-      <a href="https://arxiv.org/abs/2608.26263">Paper</a>
-    </nav>
+    <div class="shell header-inner">
+      <a class="mark" href="./">skillstate-proxy</a>
+      <nav aria-label="Documentation">
+        <a href="#install">Install</a>
+        <a href="#api">API</a>
+        <a href="#config">Config</a>
+        <a href="#limits">Limits</a>
+        <a href="https://github.com/NosytLabs/skillstate-proxy">GitHub</a>
+      </nav>
+    </div>
   </header>
-  <main>
-    <section class="hero">
-      <p class="eyebrow">OpenAI-compatible · MIT · Node &gt;= 20 · 33 tests</p>
-      <h1>Cut prompt tokens 60–95% on long-horizon agents.</h1>
-      <p class="lede">A drop-in HTTP proxy between your LLM client and any OpenAI- or Anthropic-compatible API. It replaces growing conversation history with a small, fixed-size structured state — SKILL.state (arXiv:2608.26263, EMNLP 2026). Not the npm library <code>skillstate</code> (that is an importable runtime). This is the proxy: point <code>base_url</code> at it.</p>
+  <main id="main-content" class="shell" tabindex="-1">
+    <section class="hero" aria-labelledby="intro-title">
+      <p class="eyebrow">Local developer tool · MIT</p>
+      <h1 id="intro-title">Explicit state.<br>Less repeated history.</h1>
+      <p class="lede">An HTTP proxy for agent workflows that can represent their progress as structured JSON. It replaces selected conversation history with a task specification, current state and the latest observation.</p>
+      <p class="notice">This is documentation for software you run yourself, <strong>not a hosted inference API</strong>. Model requests go to your configured upstream and may incur charges.</p>
       <div class="cta">
-        <a class="btn primary" href="https://www.npmjs.com/package/skillstate-proxy">npm i skillstate-proxy</a>
-        <a class="btn" href="#install">Install</a>
-        <a class="btn" href="https://github.com/NosytLabs/skillstate-proxy/blob/main/README.md">Full README</a>
+        <a class="btn primary" href="#install">Set up locally</a>
+        <a class="btn" href="https://github.com/NosytLabs/skillstate-proxy/blob/main/README.md">Read the README</a>
       </div>
     </section>
-    <section class="band">
-      <div class="stat"><strong>60–95%</strong><span>fewer prompt tokens on long tasks</span></div>
-      <div class="stat"><strong>0.94 vs 0.74</strong><span>accuracy at 200 steps (paper)</span></div>
-      <div class="stat"><strong>O(1)</strong><span>per-step prompt size</span></div>
-      <div class="stat"><strong>zero</strong><span>runtime npm dependencies</span></div>
+    <section aria-labelledby="workflow-title">
+      <h2 id="workflow-title">How the workflow changes</h2>
+      <p>Your client sends a request to the local proxy. The proxy builds the upstream context around the task specification and session state, then extracts a <code>state_patch</code> from the model response.</p>
+      <pre tabindex="0" aria-label="Example model state update"><code>{
+  "state_patch": {
+    "step": 2,
+    "notes": "Checked the input format"
+  },
+  "action": "Continue with validation"
+}</code></pre>
+      <p>A <code>state_patch</code> must be a JSON object, not null, an array or a scalar.
+        <code>"state_patch": {}</code> is a valid no-op. A recognized empty patch is not replaced
+        by a later legacy marker. When multiple fenced objects are present, the first valid
+        wrapped patch wins; actions from different blocks are not combined.</p>
+      <p>This is <strong>not a lossless transcript archive</strong>. Facts omitted from state may disappear from later requests. Arrays replace previous arrays; resend the full list when it must survive. A null patch value deletes its key.</p>
     </section>
-    <section>
-      <h2>What it is</h2>
-      <p>skillstate-proxy sits in front of OpenAI, Anthropic, Venice, OpenRouter, vLLM, Ollama, Gonka, or any OpenAI-compatible upstream. Each request is rewritten to spec plus current state plus latest observation. The model returns a <code>state_patch</code> plus an action. The proxy merges the patch, discards reasoning, and never re-sends the full transcript.</p>
-      <pre class="diagram"><code>your agent
-    │
-    ▼
-skillstate :8789
-  Σ on disk
-  rewrite (P, Σ, latest O)
-  drop reasoning
-    │
-    ▼
-OpenAI / Anthropic / Gonka / Ollama</code></pre>
+    <section id="install" aria-labelledby="install-title">
+      <h2 id="install-title">Install and inspect</h2>
+      <p>The npm package is <code>skillstate-proxy</code>. It exposes the commands <code>skillstate</code> and <code>skillstate-proxy</code>. Start by reading the installed version's help:</p>
+      <pre tabindex="0" aria-label="Installation commands"><code>npm install -g skillstate-proxy
+skillstate --version
+skillstate --help</code></pre>
+      <p>Configure your upstream URL and credentials locally, then start the proxy. The default listener is <code>127.0.0.1:8789</code>; a compatible chat client uses <code>http://127.0.0.1:8789/v1</code> as its API base.</p>
+      <pre tabindex="0" aria-label="Start the local proxy"><code># Set SKILLSTATE_UPSTREAM and SKILLSTATE_API_KEY
+# in your local environment before starting.
+skillstate --schema step,notes,findings</code></pre>
+      <p class="note">Choose a model available from your upstream and verify a short synthetic workflow before using sensitive data. A source checkout and the published npm package can contain different revisions.</p>
     </section>
-    <section>
-      <h2>Why it saves money</h2>
-      <p>Append-only transcripts grow linearly. SKILL.state stays a few hundred tokens per step. A live 50-step run on Gonka MiniMax-M2.7 (2026-09-07) used <strong>16,562 vs 212,606</strong> prompt tokens (92.2% less). Step 50 was 403 vs 8,904 (22×). Re-run the same day: <strong>16,805 vs 185,699</strong> (91.0%), step 50 flat at 316 (~336 constant avg). At GPT-4o rates that same run is about $0.16 vs $0.63.</p>
-      <div class="table-wrap">
+    <section id="api" aria-labelledby="api-title">
+      <h2 id="api-title">HTTP reference</h2>
+      <p>These routes describe the repository's interface, not certification of every provider or SDK. Check streaming, tool calls and translated requests against your exact client and model.</p>
+      <div class="table-wrap" tabindex="0" role="region" aria-label="HTTP routes; scroll horizontally on small screens">
         <table>
-          <thead><tr><th>Steps</th><th>Provider</th><th>Baseline</th><th>SKILL.state</th><th>Save</th></tr></thead>
+          <caption>Local proxy routes</caption>
+          <thead><tr><th scope="col">Method</th><th scope="col">Path</th><th scope="col">Purpose</th></tr></thead>
           <tbody>
-            <tr><td>50</td><td>Gonka MiniMax-M2.7 (live)</td><td>212,606 tok</td><td>16,562 tok</td><td>92%</td></tr>
-            <tr><td>50</td><td>GPT-4o ($2.50 / 1M in, same tok)</td><td>$0.63</td><td>$0.16</td><td>75%</td></tr>
-            <tr><td>100</td><td>GPT-4o</td><td>$3.20</td><td>$0.65</td><td>80%</td></tr>
-            <tr><td>200</td><td>GPT-4o</td><td>$13.00</td><td>$1.22</td><td>91%</td></tr>
-            <tr><td>50</td><td>Claude Sonnet ($3 / 1M in)</td><td>$0.49</td><td>$0.20</td><td>59%</td></tr>
+            <tr><td>POST</td><td><code>/v1/chat/completions</code></td><td>Chat-completion requests with state handling</td></tr>
+            <tr><td>POST</td><td><code>/v1/messages</code></td><td>Anthropic-format translation path</td></tr>
+            <tr><td>GET</td><td><code>/v1/models</code></td><td>Model listing from the configured upstream</td></tr>
+            <tr><td>GET</td><td><code>/health</code></td><td>Proxy and upstream circuit status</td></tr>
+            <tr><td>GET</td><td><code>/state</code></td><td>Session listing; use the session query parameter to inspect state</td></tr>
+            <tr><td>DELETE</td><td><code>/state?session=ID</code></td><td>Reset the specified session</td></tr>
+            <tr><td>GET</td><td><code>/cost</code></td><td>Recorded cost summary, not a provider invoice</td></tr>
           </tbody>
         </table>
       </div>
-      <p class="note">Gonka itself is ~0.01 GNK/1M so dollar savings there are cents. The 92% cut matters for context, rate limits, and when you point the same proxy at GPT-4o / Claude. Break-even around step 5.</p>
     </section>
-    <section>
-      <h2>What it includes</h2>
-      <ul class="grid">
-        <li><strong>Drop-in proxy</strong> — point <code>base_url</code> at it; OpenAI and Anthropic SDKs work.</li>
-        <li><strong>Tool calls</strong> — <code>tools</code> / <code>tool_calls</code> pass through; tool results become the latest observation.</li>
-        <li><strong>Streaming</strong> — SSE passthrough; state updates server-side.</li>
-        <li><strong>Anthropic translation</strong> — <code>/v1/messages</code> to OpenAI format and back.</li>
-        <li><strong>Failover</strong> — multi-upstream routing with circuit breaker and rate limiter.</li>
-        <li><strong>Session persistence</strong> — state on disk, survives restarts.</li>
-        <li><strong>Cost tracking</strong> — JSONL ledger, 24h summaries, USD and GNK.</li>
-        <li><strong>Rollback-retry</strong> — retries when the model misses structured output.</li>
-        <li><strong>Schema enforcement</strong> — drops out-of-schema keys so state stays small.</li>
+    <section id="config" aria-labelledby="config-title">
+      <h2 id="config-title">Configuration and data handling</h2>
+      <p>Start with <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/skillstate.json.example">the example configuration</a>. The CLI supports <code>--config</code>, <code>--upstream</code>, <code>--port</code>, <code>--schema</code> and <code>--verbose</code>.</p>
+      <div class="table-wrap" tabindex="0" role="region" aria-label="Environment variables; scroll horizontally on small screens">
+        <table>
+          <caption>Environment settings</caption>
+          <thead><tr><th scope="col">Variable</th><th scope="col">Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>SKILLSTATE_UPSTREAM</code></td><td>Upstream API base URL</td></tr>
+            <tr><td><code>SKILLSTATE_API_KEY</code></td><td>Upstream credential; never commit real keys</td></tr>
+            <tr><td><code>SKILLSTATE_PORT</code></td><td>Local listening port</td></tr>
+            <tr><td><code>SKILLSTATE_SCHEMA</code></td><td>Comma-separated allowed state keys</td></tr>
+            <tr><td><code>SKILLSTATE_INITIAL_STATE</code></td><td>Initial state as JSON</td></tr>
+            <tr><td><code>SKILLSTATE_CONFIG</code></td><td>Configuration file path</td></tr>
+            <tr><td><code>SKILLSTATE_VERBOSE</code></td><td>Verbose logging switch</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>For overlapping settings, CLI flags take precedence over environment variables, then the configuration file, then defaults. Consult the installed version's help for supported values.</p>
+      <p>Session state is persisted locally and can contain sensitive task information. The configured upstream receives the rewritten context. Keep the listener private, protect state and credentials, and review <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/SECURITY.md">SECURITY.md</a> before deployment.</p>
+    </section>
+    <section id="limits" aria-labelledby="limits-title">
+      <h2 id="limits-title">Limits worth understanding</h2>
+      <ul class="limits">
+        <li><strong>No guaranteed savings or accuracy.</strong> Results depend on workload, state design, model output, retries, output tokens and provider billing.</li>
+        <li><strong>A list of allowed keys is not a size bound.</strong> Values, arrays and observations can still grow. Do not infer constant latency or a fixed token budget from the state pattern alone.</li>
+        <li><strong>Not every workload fits.</strong> Avoid replacing the transcript when later steps need verbatim evidence, deferred details or a complete audit trail. Short conversations may cost more with state overhead.</li>
+        <li><strong>Not a universal compatibility layer.</strong> Verify the paths you use, especially streaming, tool-result correlation, concurrent sessions and failure recovery.</li>
       </ul>
     </section>
-    <section>
-      <h2>vs npm <code>skillstate</code> (the library)</h2>
-      <p><a href="https://www.npmjs.com/package/skillstate">skillstate</a> 1.1.2 (vitkuz573) is a TypeScript <strong>runtime you import</strong> — you rewrite your loop around <code>runtime.step()</code> and pass it your own <code>llm()</code> callback. 736+ tests, MCP server, OpenCode/Claude/Codex adapters. Benchmarks are mostly character-count harnesses (they say so). Their own README notes Claude Code and Codex adapters <strong>cannot trim host history</strong> — append-only hooks mean no O(1) there.</p>
-      <table>
-        <thead><tr><th></th><th>This proxy</th><th>skillstate (library)</th></tr></thead>
-        <tbody>
-          <tr><td>Shape</td><td>Drop-in HTTP <code>:8789</code></td><td>Library + MCP + host hooks</td></tr>
-          <tr><td>Install into existing agent</td><td>Change <code>base_url</code></td><td>Rewrite around <code>runtime.step()</code></td></tr>
-          <tr><td>Live tokens</td><td>Gonka MiniMax-M2.7 50-step: 186k→17k prompt tok (<strong>91%</strong>, reproduced twice)</td><td>Paper numbers + local char harness</td></tr>
-          <tr><td>Failover / 401 / tools</td><td>Multi-upstream, circuit breaker, tool_calls pass-through</td><td>Your <code>llm()</code> function</td></tr>
-          <tr><td>Host-history trimming</td><td>Yes — proxy rewrites every request server-side</td><td>OpenCode only; Claude/Codex append-only</td></tr>
-          <tr><td>npm name</td><td><code>skillstate-proxy</code></td><td><code>skillstate</code></td></tr>
-        </tbody>
-      </table>
-      <p class="note">Not a fork, not a fight — complementary. Use the library inside a custom loop; use this proxy when your client already speaks OpenAI HTTP and you want savings without touching code.</p>
-
-      <h2>vs Headroom / Mem0 / Letta / LangGraph</h2>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th></th><th>This proxy</th><th>Headroom</th><th>Mem0</th><th>Letta</th></tr></thead>
-          <tbody>
-            <tr><td>What shrinks</td><td>Chat history → Σ</td><td>Fat tool JSON / logs</td><td>Retrieved memories</td><td>Core + archival blocks</td></tr>
-            <tr><td>Drop-in HTTP</td><td>Yes (:8789)</td><td>Yes (:8787)</td><td>SDK / API</td><td>Full agent runtime</td></tr>
-            <tr><td>Lock-in</td><td>None (any OpenAI client)</td><td>CLI</td><td>Their store</td><td>Their agent</td></tr>
-            <tr><td>Best for</td><td>15+ step loops</td><td>Huge tool payloads</td><td>User prefs across chats</td><td>Persistent personas</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <section>
-      <h2>Same as 200k tokens of chat?</h2>
-      <p><strong>No.</strong> Each turn the model sees spec + current JSON state + latest observation. Not the archive. Facts live only if they were patched into <code>Σ</code>. Arrays replace (resend the full list). Paper: 0.94 vs 0.74 accuracy at 200 steps because noise is dropped. Live Gonka MiniMax-M2.7 50-step: 92% fewer prompt tokens. A 12-step tool loop with tiny JSON only saved 10% — use this for long history, Headroom for fat tool output.</p>
-    </section>
-    <section id="install">
-      <h2>Install</h2>
-      <p>Binary is <code>skillstate</code> (also <code>skillstate-proxy</code>). Default listen: <code>127.0.0.1:8789</code>. Package: <a href="https://www.npmjs.com/package/skillstate-proxy"><code>skillstate-proxy@0.1.2</code></a>.</p>
-      <pre><code>npx skillstate-proxy
-
-# or
-npm i -g skillstate-proxy
-SKILLSTATE_UPSTREAM=https://api.openai.com/v1 \
-SKILLSTATE_API_KEY=YOUR_UPSTREAM_API_KEY \
-skillstate</code></pre>
-      <p>Point any OpenAI client at <code>http://127.0.0.1:8789/v1</code>. Responses include <code>x-skillstate-session</code>, <code>x-skillstate-step</code>, <code>x-skillstate-cost-usd</code>.</p>
-      <pre><code>from openai import OpenAI
-c = OpenAI(base_url="http://127.0.0.1:8789/v1", api_key="ignored")
-r = c.chat.completions.create(
-    model="gpt-4o",
-    messages=[{"role":"system","content":"TASK: track state"},
-              {"role":"user","content":"go"}],
-)</code></pre>
-    </section>
-    <section id="api">
-      <h2>HTTP API</h2>
-      <p>Binds <code>127.0.0.1</code> only. Inspect routes also exist as <code>/v1/health</code>, <code>/v1/state</code>, <code>/v1/cost</code>.</p>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th>Method</th><th>Path</th><th>What it does</th></tr></thead>
-          <tbody>
-            <tr><td>POST</td><td>/v1/chat/completions</td><td>OpenAI chat; rewrite to (P, Σ, O)</td></tr>
-            <tr><td>POST</td><td>/v1/messages</td><td>Anthropic Messages; translated</td></tr>
-            <tr><td>GET</td><td>/v1/models</td><td>Proxied to the first upstream</td></tr>
-            <tr><td>GET</td><td>/health</td><td>ok plus per-upstream circuit state</td></tr>
-            <tr><td>GET</td><td>/state</td><td>Session ids; ?session= returns step + state</td></tr>
-            <tr><td>DELETE</td><td>/state?session=</td><td>Reset that session (204)</td></tr>
-            <tr><td>GET</td><td>/cost</td><td>Spend summary last 24h</td></tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
-    <section id="config">
-      <h2>Config</h2>
-      <p>Copy <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/skillstate.json.example">skillstate.json.example</a> → <code>skillstate.json</code> (gitignored). Never commit real keys. See <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/SECURITY.md">SECURITY.md</a>.</p>
-      <p>Env: <code>SKILLSTATE_UPSTREAM</code>, <code>SKILLSTATE_API_KEY</code>, <code>SKILLSTATE_PORT</code> (8789), <code>SKILLSTATE_SCHEMA</code>, <code>SKILLSTATE_INITIAL_STATE</code>, <code>SKILLSTATE_CONFIG</code>, <code>SKILLSTATE_VERBOSE</code>.</p>
-      <p>Priority: CLI flags → environment → config file → defaults.</p>
-    </section>
-    <section>
-      <h2>When not to use it</h2>
-      <p>From the paper: no fixed schema in advance; deferred-relevance observations; tasks where the trajectory itself is the output (audit, provenance). Single-agent only unless you add conflict resolution for concurrent writes.</p>
-    </section>
-    <section>
-      <h2>License and links</h2>
-      <p>MIT, copyright 2026 NosytLabs. Tests: 33 offline passing. Paper: <a href="https://arxiv.org/abs/2608.26263">arXiv:2608.26263</a>.</p>
-      <p><a href="https://www.npmjs.com/package/skillstate-proxy">npmjs.com/package/skillstate-proxy</a> · <a href="https://github.com/NosytLabs/skillstate-proxy">github.com/NosytLabs/skillstate-proxy</a> · <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/LICENSE">LICENSE</a> · <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/README.md">README</a> · <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/SECURITY.md">SECURITY</a></p>
+    <section id="verification" aria-labelledby="verification-title">
+      <h2 id="verification-title">Verification, not a static badge</h2>
+      <p>Run the build and tests from a source checkout. The <a href="https://github.com/NosytLabs/skillstate-proxy/actions">Actions history</a> records individual runs and revisions; skipped integration checks are not proof of live compatibility.</p>
+      <pre tabindex="0" aria-label="Source verification commands"><code>npm ci
+npm run build
+npm test</code></pre>
+      <p>The repository includes <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/test/benchmark.ts">a conversation benchmark</a> and <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/test/benchmark-tools.ts">a tool-loop benchmark</a>. Running them against an external provider can cost money. Retain the revision, configuration, raw usage, quality results and failures before publishing a comparison.</p>
+      <p class="note">The project draws on the <a href="https://arxiv.org/abs/2608.26263">SKILL.state paper</a>. Research results and historical runs are not performance guarantees for this implementation.</p>
     </section>
   </main>
   <footer>
-    <p>skillstate-proxy v0.1.2 · <a href="https://www.npmjs.com/package/skillstate-proxy">npm</a> · not affiliated with OpenAI or Anthropic · this site is static docs, not the proxy itself</p>
+    <div class="shell footer-inner">
+      <p>skillstate-proxy · local software, not a hosted service</p>
+      <nav aria-label="Project resources"><a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/LICENSE">MIT license</a><a href="https://www.npmjs.com/package/skillstate-proxy">npm package</a><a href="https://github.com/NosytLabs/skillstate-proxy/issues">Report an issue</a></nav>
+    </div>
   </footer>
 </body>
 </html>

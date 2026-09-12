@@ -7,6 +7,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { once } from "node:events";
+import { readBoundedText, ResponseLimitError } from "./response-body.js";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
@@ -301,9 +302,11 @@ function meterGeneration(
   const usage = extractUsage(rawBody);
   if (!usage) {
     totals.usageUnavailable = true;
+    ledger.record({ ts: new Date().toISOString(), upstream: upstream.name, model,
+      inputTokens: 0, outputTokens: 0, pricingStatus: "usage-unavailable", attemptKind });
     return { inputTokens: 0, outputTokens: 0 };
   }
-  const usedModel = model || usage.model;
+  const usedModel = usage.model || model;
   const costs = addMeteredCost(totals, upstream, usedModel, usage.inputTokens, usage.outputTokens);
   ledger.record({
     ts: new Date().toISOString(),
@@ -353,8 +356,16 @@ function costHeaders(totals: MeterTotals): Record<string, string> {
 }
 
 async function writeChunk(res: ServerResponse, chunk: Uint8Array | string): Promise<void> {
-  if (res.destroyed || res.writableEnded) return;
-  if (!res.write(chunk)) await once(res, "drain");
+  if (res.destroyed || res.writableEnded) throw new Error("downstream closed");
+  if (!res.write(chunk)) {
+    const controller = new AbortController();
+    const closed = () => controller.abort(new Error("downstream closed before drain"));
+    res.once("close", closed);
+    try {
+      if (res.destroyed) closed();
+      await once(res, "drain", { signal: controller.signal });
+    } finally { res.removeListener("close", closed); }
+  }
 }
 
 export interface ProxyResult {
@@ -377,6 +388,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
     breakers.set(upstream.name, new CircuitBreaker(upstream.name, config.circuitBreaker));
   }
 
+  const requestSignals = new WeakMap<IncomingMessage, AbortSignal>();
   const transport = (req: IncomingMessage, body: string | undefined, estimatedTokens: number, path = "/v1/chat/completions", method = "POST") =>
     requestUpstream({
       upstreams,
@@ -384,6 +396,8 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
       method,
       body,
       incomingHeaders: req.headers,
+      signal: requestSignals.get(req),
+      maxResponseBytes: config.maxResponseCaptureBytes,
       estimatedTokens,
       limiters,
       breakers,
@@ -393,7 +407,18 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
       retryAfterCapMs: config.retryAfterCapMs,
     });
 
+  const readSelected = async (selected: SelectedUpstream) => {
+    try { return await readBoundedText(selected.response, config.maxResponseCaptureBytes); }
+    finally { selected.finish(); }
+  };
+
   const server = createServer(async (req, res) => {
+    const downstream = new AbortController();
+    requestSignals.set(req, downstream.signal);
+    const disconnect = () => {
+      if (!res.writableEnded) downstream.abort(new Error("downstream client disconnected"));
+    };
+    res.once("close", disconnect);
     try {
       if (config.cors) {
         setCors(res);
@@ -416,8 +441,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
           const selected = await transport(req, undefined, 0, "/v1/models", "GET");
           res.statusCode = selected.response.status;
           copyUpstreamResponseHeaders(selected.response, res);
-          const text = await selected.response.text();
-          selected.finish();
+          const text = await readSelected(selected);
           res.end(text);
         } catch (error) {
           if (error instanceof TransportError) {
@@ -484,7 +508,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
             res.end(JSON.stringify({ error: "invalid session id" }));
             return;
           }
-          store.delete(sid);
+          await store.withSessionLock(sid, () => store.delete(sid));
           res.statusCode = 204;
           res.end();
           return;
@@ -560,6 +584,8 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
           store.save(sid, session);
         }
 
+        // Work on a detached candidate. A failed durable save must not mutate the cache.
+        session = structuredClone(session);
         const { body: rewritten } = rewriteBody(normalized.raw, session);
         let requestBody = JSON.stringify(rewritten);
         const estimated = estimateTokens(requestBody);
@@ -588,8 +614,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
           res.statusCode = selected.response.status;
           copyUpstreamResponseHeaders(selected.response, res);
           setCommonHeaders(res, sid, session, selected.upstream.name, "invalid", [], costHeaders(totals));
-          const text = await selected.response.text();
-          selected.finish();
+          const text = await readSelected(selected);
           res.end(text);
           return;
         }
@@ -597,7 +622,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
         if (wantsStream) {
           const upstream = selected.upstream as UpstreamConfig;
           const observer = new OpenAIStreamObserver(config.maxResponseCaptureBytes);
-          const parser = isAnthropic ? new SseParser() : null;
+          const parser = isAnthropic ? new SseParser(config.maxResponseCaptureBytes) : null;
           const anthropic = isAnthropic ? new AnthropicStreamAdapter(modelFromBody(body), `msg_${sid}`) : null;
           const contentType = selected.response.headers.get("content-type") ?? "text/event-stream";
 
@@ -618,6 +643,9 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
               const { done, value } = await reader.read();
               if (done) break;
               observer.feed(value);
+              if (isAnthropic && observer.truncated) {
+                throw new ResponseLimitError(config.maxResponseCaptureBytes);
+              }
               if (isAnthropic && parser && anthropic) {
                 for (const frame of parser.feed(value)) {
                   for (const event of anthropic.push(frame.data)) await writeChunk(res, event);
@@ -635,19 +663,21 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
 
             const observed = observer.result();
             const synthetic = JSON.stringify({
-              model: modelFromBody(body),
-              usage: { prompt_tokens: observed.inputTokens, completion_tokens: observed.outputTokens },
+              model: observed.model || modelFromBody(body),
+              ...(observed.usageAvailable ? { usage: { prompt_tokens: observed.inputTokens, completion_tokens: observed.outputTokens } } : {}),
             });
-            if (observed.inputTokens || observed.outputTokens) meterGeneration(ledger, totals, upstream, modelFromBody(body), synthetic, "stream");
-            else totals.usageUnavailable = true;
+            meterGeneration(ledger, totals, upstream, observed.model || modelFromBody(body), synthetic, "stream");
 
-            const transition = evaluateTransition(session, observed.content, observed.toolCalls, config);
+            const transition: TransitionResult = observed.truncated
+              ? { status: "invalid", errors: ["stream capture exceeded byte limit"], committed: false }
+              : evaluateTransition(session, observed.content, observed.toolCalls, config);
             if (transition.committed) store.save(sid, session);
             if (config.verbose && transition.status === "invalid") {
               console.warn(`[skillstate] streamed transition invalid sid=${sid}: ${transition.errors.join("; ")}`);
             }
             res.end();
           } catch (error: any) {
+            selected.controller.abort(error);
             if (!res.headersSent) {
               res.statusCode = 502;
               res.setHeader("content-type", "application/json");
@@ -663,8 +693,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
         }
 
         let finalSelected = selected;
-        let finalText = await selected.response.text();
-        selected.finish();
+        let finalText = await readSelected(selected);
         let finalJson: any;
         try { finalJson = JSON.parse(finalText); }
         catch {
@@ -700,8 +729,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
             retrySelected.finish();
             break;
           }
-          const retryText = await retrySelected.response.text();
-          retrySelected.finish();
+          const retryText = await readSelected(retrySelected);
           let retryJson: any;
           try { retryJson = JSON.parse(retryText); }
           catch { break; }
@@ -739,9 +767,12 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
       });
     } catch (error: any) {
       if (res.destroyed || res.writableEnded) return;
-      res.statusCode = 500;
+      res.statusCode = error instanceof ResponseLimitError ? 502 : 500;
       res.setHeader("content-type", "application/json");
       res.end(JSON.stringify({ error: error?.message ?? String(error) }));
+    } finally {
+      res.removeListener("close", disconnect);
+      requestSignals.delete(req);
     }
   });
 

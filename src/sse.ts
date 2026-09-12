@@ -1,3 +1,5 @@
+import { extractUsage } from "./token-estimate.js";
+
 export interface SseFrame {
   event?: string;
   data: string;
@@ -6,6 +8,17 @@ export interface SseFrame {
 export class SseParser {
   private buffer = "";
   private readonly decoder = new TextDecoder();
+
+  constructor(private readonly maxFrameBytes = 1024 * 1024) {
+    if (!Number.isSafeInteger(maxFrameBytes) || maxFrameBytes <= 0) throw new RangeError("invalid SSE frame limit");
+  }
+
+  private checkSize(value: string): void {
+    if (Buffer.byteLength(value, "utf8") > this.maxFrameBytes) {
+      this.buffer = "";
+      throw new RangeError("SSE frame exceeded configured byte limit");
+    }
+  }
 
   feed(chunk: string | Uint8Array): SseFrame[] {
     this.buffer += typeof chunk === "string" ? chunk : this.decoder.decode(chunk, { stream: true });
@@ -16,15 +29,18 @@ export class SseParser {
       if (boundary < 0) break;
       const raw = this.buffer.slice(0, boundary);
       this.buffer = this.buffer.slice(boundary + 2);
+      this.checkSize(raw);
       const frame = this.parse(raw);
       if (frame) frames.push(frame);
     }
+    this.checkSize(this.buffer);
     return frames;
   }
 
   end(): SseFrame[] {
     this.buffer += this.decoder.decode();
-    if (!this.buffer.trim()) return [];
+    this.checkSize(this.buffer);
+    if (!this.buffer.trim()) { this.buffer = ""; return []; }
     const frame = this.parse(this.buffer.replace(/\r\n/g, "\n"));
     this.buffer = "";
     return frame ? [frame] : [];
@@ -52,14 +68,16 @@ export class BoundedCapture {
   private retained = 0;
   truncated = false;
 
-  constructor(private readonly maxBytes: number) {}
+  constructor(private readonly maxBytes: number) {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new RangeError("invalid capture byte limit");
+  }
 
   append(chunk: string | Uint8Array): void {
     const buf = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk);
     const room = Math.max(0, this.maxBytes - this.retained);
     if (buf.length > room) this.truncated = true;
     if (room > 0) {
-      const kept = buf.subarray(0, Math.min(room, buf.length));
+      const kept = Buffer.from(buf.subarray(0, Math.min(room, buf.length)));
       this.chunks.push(kept);
       this.retained += kept.length;
     }
@@ -77,6 +95,8 @@ export interface ObservedOpenAIStream {
   outputTokens: number;
   truncated: boolean;
   raw: string;
+  model: string;
+  usageAvailable: boolean;
 }
 
 type ToolAccumulator = {
@@ -86,7 +106,9 @@ type ToolAccumulator = {
 };
 
 export class OpenAIStreamObserver {
-  private readonly parser = new SseParser();
+  private readonly parser: SseParser;
+  private model = "";
+  private usageAvailable = false;
   private readonly capture: BoundedCapture;
   private content = "";
   private inputTokens = 0;
@@ -95,14 +117,20 @@ export class OpenAIStreamObserver {
 
   constructor(maxCaptureBytes: number) {
     this.capture = new BoundedCapture(maxCaptureBytes);
+    this.parser = new SseParser(maxCaptureBytes);
   }
 
+  get truncated(): boolean { return this.capture.truncated; }
+
   feed(chunk: string | Uint8Array): void {
+    if (this.capture.truncated) return;
     this.capture.append(chunk);
+    if (this.capture.truncated) return;
     for (const frame of this.parser.feed(chunk)) this.observe(frame);
   }
 
   end(): void {
+    if (this.capture.truncated) return;
     for (const frame of this.parser.end()) this.observe(frame);
   }
 
@@ -112,9 +140,14 @@ export class OpenAIStreamObserver {
     try { json = JSON.parse(frame.data); }
     catch { return; }
 
+    if (typeof json.model === "string") this.model = json.model;
     if (json.usage) {
-      this.inputTokens = json.usage.prompt_tokens ?? json.usage.input_tokens ?? this.inputTokens;
-      this.outputTokens = json.usage.completion_tokens ?? json.usage.output_tokens ?? this.outputTokens;
+      const usage = extractUsage(frame.data);
+      this.usageAvailable = usage !== null;
+      if (usage) {
+        this.inputTokens = usage.inputTokens;
+        this.outputTokens = usage.outputTokens;
+      }
     }
     for (const choice of json.choices ?? []) {
       const delta = choice?.delta ?? {};
@@ -143,6 +176,8 @@ export class OpenAIStreamObserver {
       outputTokens: this.outputTokens,
       truncated: this.capture.truncated,
       raw: this.capture.text(),
+      model: this.model,
+      usageAvailable: this.usageAvailable && !this.capture.truncated,
     };
   }
 }

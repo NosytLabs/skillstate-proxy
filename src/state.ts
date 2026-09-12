@@ -211,68 +211,57 @@ export function extractDelta(text: string): {
   valid: boolean;
   format: "paper" | "legacy" | "none";
 } {
-  let delta: Record<string, unknown> = {};
-  let action: string | undefined;
-  let reasoning = text;
-  let format: "paper" | "legacy" | "none" = "none";
-  let valid = false;
-
-  const pickPatch = (o: Record<string, unknown>) =>
-    (o.state_patch ?? o.statePatch ?? o.delta ?? o.state ?? o.sigma) as unknown | undefined;
-  const pickAction = (o: Record<string, unknown>): string | undefined => {
-    const a = o.action ?? o.command;
-    return typeof a === "string" ? a : undefined;
+  const none = { delta: {}, action: undefined, reasoning: text, valid: false, format: "none" as const };
+  const aliases = ["state_patch", "statePatch", "delta", "state", "sigma"];
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  const patchKey = (value: Record<string, unknown>) =>
+    aliases.find((key) => Object.prototype.hasOwnProperty.call(value, key));
+  const actionOf = (value: Record<string, unknown>) => {
+    const action = value.action ?? value.command;
+    return typeof action === "string" ? action : undefined;
   };
 
-  const fence = text.match(/```(?:json|state|delta|sigma|Σ)?\s*\n?([\s\S]*?)```/i);
-  if (fence) {
-    const parsed = tryJson(fence[1]!);
-    if (plainObject(parsed)) {
-      const sp = pickPatch(parsed);
-      if (plainObject(sp)) {
-        delta = sp;
-        action = pickAction(parsed);
-        format = "paper";
-        valid = true;
-        reasoning = text.replace(fence[0], "").trim();
-      } else {
-        delta = parsed;
-        format = "legacy";
-        reasoning = text.replace(fence[0], "").trim();
+  // Presence and validity determine precedence, never the number of keys.
+  // An empty patch is a successful no-op, not an invitation to parse more text.
+  let legacy: { delta: Record<string, unknown>; reasoning: string } | undefined;
+  let invalidWrapper = false;
+  const fences = text.matchAll(/```(?:json|state|delta|sigma|Σ)?[ \t]*(?:\r?\n)?([\s\S]*?)```/gi);
+  for (const fence of fences) {
+    const obj = tryJson(fence[1]);
+    if (!isRecord(obj)) continue;
+    const key = patchKey(obj);
+    const reasoning = (text.slice(0, fence.index) + text.slice(fence.index + fence[0].length)).trim();
+    if (key !== undefined) {
+      const patch = obj[key];
+      if (isRecord(patch)) {
+        return { delta: patch, action: actionOf(obj), reasoning, valid: true, format: "paper" };
       }
+      // Do not reinterpret a malformed protocol wrapper as legacy state,
+      // or silently use a different alias when the preferred key is invalid.
+      invalidWrapper = true;
+    } else if (!legacy) {
+      legacy = { delta: obj, reasoning };
     }
   }
+  if (invalidWrapper) return none;
+  if (legacy) return { ...legacy, action: undefined, valid: false, format: "legacy" };
 
-  if (Object.keys(delta).length === 0) {
-    const inline = text.match(/(?:@state|STATE:|ΔΣ:|DELTA:)\s*(\{[\s\S]*?\})\s*(?:\n|$)/i);
-    if (inline) {
-      const parsed = tryJson(inline[1]!);
-      if (plainObject(parsed)) {
-        delta = parsed;
-        format = "legacy";
-      }
-    }
+  const inline = text.match(/(?:@state|STATE:|ΔΣ:|DELTA:)\s*(\{[\s\S]*?\})\s*(?:\n|$)/i);
+  if (inline) {
+    const obj = tryJson(inline[1]);
+    if (isRecord(obj)) return { delta: obj, action: undefined, reasoning: text, valid: false, format: "legacy" };
   }
 
-  if (Object.keys(delta).length === 0) {
-    const whole = tryJson(text.trim());
-    if (plainObject(whole)) {
-      const sp = pickPatch(whole);
-      if (plainObject(sp)) {
-        delta = sp;
-        action = pickAction(whole);
-        format = "paper";
-        valid = true;
-        reasoning = "";
-      } else if (sp && typeof sp === "object") {
-        delta = sp as Record<string, unknown>;
-        format = "legacy";
-        reasoning = "";
-      }
+  const whole = tryJson(text.trim());
+  if (isRecord(whole)) {
+    const key = patchKey(whole);
+    const patch = key === undefined ? undefined : whole[key];
+    if (isRecord(patch)) {
+      return { delta: patch, action: actionOf(whole), reasoning: "", valid: true, format: "paper" };
     }
   }
-
-  return { delta, action, reasoning, valid, format };
+  return none;
 }
 
 export function buildStepPrompt(

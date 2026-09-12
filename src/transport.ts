@@ -1,3 +1,4 @@
+import { readBoundedText, ResponseLimitError } from "./response-body.js";
 import type { CircuitBreaker } from "./circuit-breaker.js";
 import type { RateLimiter } from "./rate-limiter.js";
 import { buildUpstreamHeaders } from "./headers.js";
@@ -37,6 +38,7 @@ export interface RequestUpstreamOptions {
   retryMaxAttempts: number;
   retryAfterCapMs: number;
   signal?: AbortSignal;
+  maxResponseBytes?: number;
 }
 
 export interface SelectedUpstream {
@@ -147,6 +149,9 @@ export async function requestUpstream(options: RequestUpstreamOptions): Promise<
     if (!limiter || !breaker) continue;
 
     for (let attempt = 1; attempt <= options.retryMaxAttempts; attempt++) {
+      if (options.signal?.aborted) {
+        throw new TransportError("downstream request aborted", 499, '{"error":"downstream request aborted"}', attempts);
+      }
       const allowed = limiter.check(options.estimatedTokens);
       if (!allowed.ok) {
         attempts.push({ upstream: upstream.name, attempt, status: 429, localRateLimit: true });
@@ -178,6 +183,7 @@ export async function requestUpstream(options: RequestUpstreamOptions): Promise<
         attempts.push({ upstream: upstream.name, attempt, error: error?.message ?? String(error) });
         lastStatus = 502;
         lastBody = JSON.stringify({ error: error?.message ?? String(error) });
+        if (options.signal?.aborted) throw new TransportError("downstream request aborted", 499, lastBody, attempts);
         if (attempt < options.retryMaxAttempts) {
           await sleep(retryAfterMs(null, options.retryAfterCapMs, attempt), options.signal);
           continue;
@@ -191,8 +197,16 @@ export async function requestUpstream(options: RequestUpstreamOptions): Promise<
       if (isRetryable(response.status)) {
         breaker.recordFailure();
         lastStatus = response.status;
-        lastBody = await response.text();
-        addUsage(attemptRow, lastBody);
+        try {
+          lastBody = await readBoundedText(response, options.maxResponseBytes ?? 1024 * 1024);
+          addUsage(attemptRow, lastBody);
+        } catch (error) {
+          lifecycle.controller.abort(error);
+          if (error instanceof ResponseLimitError) {
+            throw new TransportError(error.message, 502, JSON.stringify({ error: error.message }), attempts);
+          }
+          throw error;
+        } finally { lifecycle.finish(); }
         const delay = retryAfterMs(response.headers.get("retry-after"), options.retryAfterCapMs, attempt);
         lifecycle.finish();
         if (attempt < options.retryMaxAttempts) {
@@ -204,8 +218,16 @@ export async function requestUpstream(options: RequestUpstreamOptions): Promise<
 
       if (response.status === 401 || response.status === 403) {
         lastStatus = response.status;
-        lastBody = await response.text();
-        addUsage(attemptRow, lastBody);
+        try {
+          lastBody = await readBoundedText(response, options.maxResponseBytes ?? 1024 * 1024);
+          addUsage(attemptRow, lastBody);
+        } catch (error) {
+          lifecycle.controller.abort(error);
+          if (error instanceof ResponseLimitError) {
+            throw new TransportError(error.message, 502, JSON.stringify({ error: error.message }), attempts);
+          }
+          throw error;
+        } finally { lifecycle.finish(); }
         lifecycle.finish();
         break;
       }
