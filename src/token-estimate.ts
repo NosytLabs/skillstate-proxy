@@ -1,7 +1,7 @@
 /** Lightweight token estimator (fallback when upstream doesn't report usage). */
 export function estimateTokens(text: string): number {
   if (!text) return 0;
-  // ~4 chars/token for English; rough but adequate for metering.
+  // ~4 chars/token for English; a rough context estimate, not billable usage.
   return Math.ceil(text.length / 4);
 }
 
@@ -16,14 +16,14 @@ export function extractUsage(body: string): Usage | null {
     const j = JSON.parse(body);
     // support both prompt_tokens/completion_tokens and input_tokens/output_tokens (Anthropic)
     const u = j.usage;
-    if (u) {
-      const inTok = u.prompt_tokens ?? u.input_tokens ?? u.promptTokens ?? 0;
-      const outTok = u.completion_tokens ?? u.output_tokens ?? u.completionTokens ?? 0;
-      if (inTok != null || outTok != null) {
+    if (u && typeof u === "object" && !Array.isArray(u)) {
+      const inTok = u.prompt_tokens ?? u.input_tokens ?? u.promptTokens;
+      const outTok = u.completion_tokens ?? u.output_tokens ?? u.completionTokens;
+      if (Number.isSafeInteger(inTok) && inTok >= 0 && Number.isSafeInteger(outTok) && outTok >= 0) {
         return {
-          model: j.model ?? "",
-          inputTokens: inTok ?? 0,
-          outputTokens: outTok ?? 0,
+          model: typeof j.model === "string" ? j.model : "",
+          inputTokens: inTok,
+          outputTokens: outTok,
         };
       }
     }
