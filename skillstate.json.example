@@ -14,7 +14,6 @@
       "priority": 1
     }
   ],
-  "defaultModel": "gpt-4o-mini",
   "stateDir": "~/.skillstate/state",
   "schema": ["step", "notes", "flags"],
   "initialState": {
@@ -22,8 +21,16 @@
     "notes": [],
     "flags": []
   },
-  "discardReasoning": true,
   "maxRetries": 2,
+  "maxBodyBytes": 1048576,
+  "maxPatchBytes": 32768,
+  "maxStateBytes": 65536,
+  "maxResponseCaptureBytes": 2097152,
+  "sessionTtlMs": 86400000,
+  "connectTimeoutMs": 10000,
+  "requestTimeoutMs": 300000,
+  "retryMaxAttempts": 3,
+  "retryAfterCapMs": 5000,
   "cors": true,
   "costLedgerPath": "~/.skillstate/spend.jsonl"
 }

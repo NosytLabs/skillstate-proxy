@@ -2,182 +2,238 @@
 import { startProxy, DEFAULT_CONFIG, type ProxyConfig } from "./proxy.js";
 import { readFileSync, existsSync } from "node:fs";
 
-const VERSION = "0.1.2";
+class CliConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CliConfigError";
+  }
+}
+
+function packageVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+    return typeof pkg.version === "string" ? pkg.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
 
 function printHelp(): void {
   console.log(`
-skillstate-proxy v${VERSION}
+skillstate-proxy v${packageVersion()}
 
-Drop-in token-savings proxy for long-horizon LLM agents.
-Cuts prompt tokens 60-95% via SKILL.state (arXiv:2608.26263, EMNLP 2026).
+Drop-in SKILL.state proxy for long-horizon LLM agents.
+Rewrites growing histories to (spec, structured state, latest observation).
 
 USAGE
   skillstate [options]
+  skillstate-proxy [options]
 
 OPTIONS
   --help, -h          Show this help message
-  --version, -v       Print version
-  --config <path>     Path to JSON config file (default: skillstate.json in CWD)
-  --port <number>     Listen port (default: 8789, env: SKILLSTATE_PORT)
-  --upstream <url>    Upstream API base URL (env: SKILLSTATE_UPSTREAM)
-  --schema <keys>     Comma-separated state keys (env: SKILLSTATE_SCHEMA)
-  --verbose           Enable verbose request logging
+  --version, -v       Print package version
+  --config <path>     JSON config file (auto-discovers ./skillstate.json)
+  --port <number>     Listen port, 0-65535 (default 8789)
+  --upstream <url>    Upstream HTTP(S) API base URL
+  --schema <keys>     Comma-separated fixed state keys
+  --verbose           Enable request metadata logging (never message bodies/keys)
 
-ENVIRONMENT VARIABLES
-  SKILLSTATE_UPSTREAM         Upstream API base URL (default: https://api.openai.com/v1)
-  SKILLSTATE_API_KEY          API key for the upstream
-  SKILLSTATE_PORT             Listen port (default: 8789)
-  SKILLSTATE_SCHEMA           Comma-separated state keys (e.g. step,notes,flags)
-  SKILLSTATE_INITIAL_STATE    JSON string of initial state
-  SKILLSTATE_CONFIG           Path to a JSON config file
-  SKILLSTATE_VERBOSE          Enable verbose request logging (set to "1")
+ENVIRONMENT
+  SKILLSTATE_UPSTREAM
+  SKILLSTATE_API_KEY
+  SKILLSTATE_PORT
+  SKILLSTATE_SCHEMA
+  SKILLSTATE_INITIAL_STATE
+  SKILLSTATE_CONFIG
+  SKILLSTATE_VERBOSE
 
-ENDPOINTS (served by the proxy)
-  POST /v1/chat/completions   OpenAI-compatible chat completions
-  POST /v1/messages           Anthropic-compatible messages (auto-translated)
-  GET  /v1/models             List models (proxied to upstream)
-  GET  /health                Upstream circuit breaker status
-  GET  /state                 List sessions (or ?session=<sid> to inspect)
-  DELETE /state?session=<sid> Reset a session
-  GET  /cost                  24h spend summary
+ENDPOINTS
+  POST   /v1/chat/completions
+  POST   /v1/messages
+  GET    /v1/models
+  GET    /health
+  GET    /state[?session=<sid>]
+  DELETE /state?session=<sid>
+  GET    /cost
 
-EXAMPLES
-  # Point at OpenAI
+SESSION CONTINUITY
+  Send x-skillstate-session back on later requests. If omitted, the proxy creates
+  a new random session id and returns it in the response header.
+
+EXAMPLE
   SKILLSTATE_UPSTREAM=https://api.openai.com/v1 \\
   SKILLSTATE_API_KEY=sk-... \\
   skillstate
-
-  # Point at Venice (cheap open models)
-  SKILLSTATE_UPSTREAM=https://api.venice.ai/api/v1 \\
-  SKILLSTATE_API_KEY=... \\
-  skillstate
-
-  # Point at local Ollama
-  SKILLSTATE_UPSTREAM=http://localhost:11434/v1 \\
-  skillstate
-
-  # Use a config file
-  skillstate --config skillstate.json
-
-  # Call the proxy
-  curl http://127.0.0.1:8789/v1/chat/completions \\
-    -H 'content-type: application/json' \\
-    -d '{"model":"gpt-4o","messages":[{"role":"system","content":"TASK: track state"},{"role":"user","content":"go"}]}'
-
-CONFIG FILE (skillstate.json)
-  {
-    "listenPort": 8789,
-    "upstreams": [
-      { "name": "openai", "url": "https://api.openai.com/v1", "apiKey": "sk-...", "priority": 0 }
-    ],
-    "schema": ["step", "notes", "flags"],
-    "initialState": { "step": 0 },
-    "maxRetries": 2,
-    "cors": true
-  }
 
 For more information: https://github.com/NosytLabs/skillstate-proxy
 Paper: https://arxiv.org/abs/2608.26263
 `);
 }
 
-function parseArgs(argv: string[]): Partial<ProxyConfig> & { configPath?: string } {
-  const args = argv.slice(2);
-  const cfg: Partial<ProxyConfig> & { configPath?: string } = {};
-  let i = 0;
+type CliArgs = Partial<ProxyConfig> & { configPath?: string; exit?: "help" | "version" };
 
-  while (i < args.length) {
-    const a = args[i];
-    switch (a) {
+function requiredValue(args: string[], index: number, flag: string): string {
+  const value = args[index];
+  if (!value || value.startsWith("--")) throw new CliConfigError(`missing value for ${flag}`);
+  return value;
+}
+
+export function parseArgs(argv: string[]): CliArgs {
+  const args = argv.slice(2);
+  const cfg: CliArgs = {};
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]!;
+    switch (arg) {
       case "--help":
       case "-h":
-        printHelp();
-        process.exit(0);
+        cfg.exit = "help";
+        return cfg;
       case "--version":
       case "-v":
-        console.log(VERSION);
-        process.exit(0);
+        cfg.exit = "version";
+        return cfg;
       case "--config":
-        cfg.configPath = args[++i];
+        cfg.configPath = requiredValue(args, ++i, "--config");
         break;
-      case "--port":
-        cfg.listenPort = Number(args[++i]);
+      case "--port": {
+        const value = requiredValue(args, ++i, "--port");
+        const port = Number(value);
+        if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+          throw new CliConfigError("port must be an integer between 0 and 65535");
+        }
+        cfg.listenPort = port;
         break;
+      }
       case "--upstream": {
-        const url = args[++i];
-        const key = process.env.SKILLSTATE_API_KEY;
-        cfg.upstreams = [{ name: "cli", url, apiKey: key, priority: 0 }];
+        const url = requiredValue(args, ++i, "--upstream");
+        cfg.upstreams = [{ name: "cli", url, apiKey: process.env.SKILLSTATE_API_KEY, priority: 0 }];
         break;
       }
       case "--schema":
-        cfg.schema = args[++i]?.split(",").map(s => s.trim()).filter(Boolean);
+        cfg.schema = requiredValue(args, ++i, "--schema").split(",").map(s => s.trim()).filter(Boolean);
         break;
       case "--verbose":
         cfg.verbose = true;
         break;
       default:
-        console.error(`[skillstate] unknown option: ${a}`);
-        console.error("Run with --help for usage.");
-        process.exit(1);
+        throw new CliConfigError(`unknown option: ${arg}. Run with --help for usage.`);
     }
-    i++;
   }
-
   return cfg;
 }
 
-function loadConfig(cliArgs: Partial<ProxyConfig> & { configPath?: string }): Partial<ProxyConfig> {
-  // CLI args > config file > env vars > defaults
-  const cfgPath = cliArgs.configPath
-    ?? process.env.SKILLSTATE_CONFIG
-    ?? (existsSync("skillstate.json") ? "skillstate.json" : undefined);
+function parseInitialState(raw: string): Record<string, unknown> {
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); }
+  catch { throw new CliConfigError("SKILLSTATE_INITIAL_STATE must be valid JSON"); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CliConfigError("SKILLSTATE_INITIAL_STATE must be a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
 
-  let fileCfg: Partial<ProxyConfig> = {};
-  if (cfgPath && existsSync(cfgPath)) {
+function parsePort(raw: string, source: string): number {
+  const port = Number(raw);
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new CliConfigError(`${source} must be an integer between 0 and 65535`);
+  }
+  return port;
+}
+
+export function loadConfig(cliArgs: CliArgs): Partial<ProxyConfig> {
+  const explicitConfig = cliArgs.configPath ?? process.env.SKILLSTATE_CONFIG;
+  const autoConfig = !explicitConfig && existsSync("skillstate.json") ? "skillstate.json" : undefined;
+  const configPath = explicitConfig ?? autoConfig;
+
+  if (explicitConfig && !existsSync(explicitConfig)) {
+    throw new CliConfigError(`config file not found: ${explicitConfig}`);
+  }
+
+  let fileConfig: Partial<ProxyConfig> = {};
+  if (configPath) {
     try {
-      fileCfg = JSON.parse(readFileSync(cfgPath, "utf-8"));
-    } catch (err: any) {
-      console.error(`[skillstate] failed to parse config file: ${cfgPath}`);
-      console.error(err?.message ?? err);
-      process.exit(1);
+      const parsed: unknown = JSON.parse(readFileSync(configPath, "utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("top level must be an object");
+      }
+      fileConfig = parsed as Partial<ProxyConfig>;
+    } catch (error: any) {
+      throw new CliConfigError(`failed to parse config file ${configPath}: ${error?.message ?? String(error)}`);
     }
   }
 
-  const envUpstreams = process.env.SKILLSTATE_UPSTREAM
-    ? [{ name: "env", url: process.env.SKILLSTATE_UPSTREAM, apiKey: process.env.SKILLSTATE_API_KEY, priority: 0 }]
-    : undefined;
+  const envConfig: Partial<ProxyConfig> = {};
+  if (process.env.SKILLSTATE_PORT !== undefined) envConfig.listenPort = parsePort(process.env.SKILLSTATE_PORT, "SKILLSTATE_PORT");
+  if (process.env.SKILLSTATE_UPSTREAM) {
+    envConfig.upstreams = [{
+      name: "env",
+      url: process.env.SKILLSTATE_UPSTREAM,
+      apiKey: process.env.SKILLSTATE_API_KEY,
+      priority: 0,
+    }];
+  }
+  if (process.env.SKILLSTATE_SCHEMA !== undefined) {
+    envConfig.schema = process.env.SKILLSTATE_SCHEMA.split(",").map(s => s.trim()).filter(Boolean);
+  }
+  if (process.env.SKILLSTATE_INITIAL_STATE !== undefined) {
+    envConfig.initialState = parseInitialState(process.env.SKILLSTATE_INITIAL_STATE);
+  }
+  if (process.env.SKILLSTATE_VERBOSE !== undefined) {
+    const raw = process.env.SKILLSTATE_VERBOSE.toLowerCase();
+    if (!["0", "1", "false", "true"].includes(raw)) {
+      throw new CliConfigError("SKILLSTATE_VERBOSE must be 0, 1, false, or true");
+    }
+    envConfig.verbose = raw === "1" || raw === "true";
+  }
 
-  const envCfg: Partial<ProxyConfig> = {
-    listenPort: process.env.SKILLSTATE_PORT ? Number(process.env.SKILLSTATE_PORT) : undefined,
-    upstreams: envUpstreams,
-    schema: process.env.SKILLSTATE_SCHEMA ? process.env.SKILLSTATE_SCHEMA.split(",").map(s => s.trim()).filter(Boolean) : undefined,
-    initialState: process.env.SKILLSTATE_INITIAL_STATE ? JSON.parse(process.env.SKILLSTATE_INITIAL_STATE) : undefined,
-    verbose: process.env.SKILLSTATE_VERBOSE === "1" || process.env.SKILLSTATE_VERBOSE === "true",
-  };
+  const cliConfig = Object.fromEntries(
+    Object.entries(cliArgs).filter(([key, value]) => value !== undefined && key !== "configPath" && key !== "exit"),
+  ) as Partial<ProxyConfig>;
 
-  // Merge: defaults < file < env < cli
-  const merged: Partial<ProxyConfig> = {
+  // Exact precedence: defaults < config file < environment < CLI.
+  return {
     ...DEFAULT_CONFIG,
-    ...fileCfg,
-    ...Object.fromEntries(Object.entries(envCfg).filter(([, v]) => v !== undefined)),
-    ...Object.fromEntries(Object.entries(cliArgs).filter(([k, v]) => v !== undefined && k !== "configPath")),
+    ...fileConfig,
+    ...envConfig,
+    ...cliConfig,
   };
-
-  return merged;
 }
 
-const cliArgs = parseArgs(process.argv);
-const cfg = loadConfig(cliArgs);
+async function main(): Promise<void> {
+  try {
+    const cliArgs = parseArgs(process.argv);
+    if (cliArgs.exit === "help") {
+      printHelp();
+      return;
+    }
+    if (cliArgs.exit === "version") {
+      console.log(packageVersion());
+      return;
+    }
 
-startProxy(cfg).then(({ port, close }) => {
-  console.log(`[skillstate] ready. Point OpenAI-compatible clients at http://127.0.0.1:${port}`);
+    const config = loadConfig(cliArgs);
+    const proxy = await startProxy(config);
+    console.log(`[skillstate] ready. Point OpenAI-compatible clients at http://127.0.0.1:${proxy.port}/v1`);
 
-  const shutdown = () => {
-    console.log("\n[skillstate] shutting down…");
-    close();
-    process.exit(0);
-  };
+    let shuttingDown = false;
+    const shutdown = async (signal: string) => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.log(`\n[skillstate] ${signal}; shutting down...`);
+      try {
+        await proxy.close();
+      } catch (error: any) {
+        console.error(`[skillstate] shutdown error: ${error?.message ?? String(error)}`);
+        process.exitCode = 1;
+      }
+    };
+    process.once("SIGINT", () => { void shutdown("SIGINT"); });
+    process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
+  } catch (error: any) {
+    const message = error?.message ?? String(error);
+    console.error(`[skillstate] configuration error: ${message}`);
+    process.exitCode = 1;
+  }
+}
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
-});
+void main();

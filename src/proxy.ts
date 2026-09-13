@@ -1,23 +1,47 @@
 /**
- * skillstate-proxy — OpenAI-compatible proxy enforcing SKILL.state discipline.
- * Rewrites every request to (P, Σ, O), validates + persists ΔΣ, discards reasoning.
- * Includes production hardening: circuit breaker, rate limiter, cost ledger,
- * multi-upstream failover, and Anthropic↔OpenAI translation.
+ * skillstate-proxy — paper-faithful SKILL.state HTTP proxy.
  *
- * Based on SKILL.state (arXiv:2608.26263) — https://arxiv.org/abs/2608.26263
+ * Request path: normalize protocol -> acquire session -> rewrite to (P, Σ, O)
+ * -> bounded upstream transport -> validate transition -> atomically persist.
  */
 
-import { createServer, IncomingMessage, Server } from "node:http";
-import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { once } from "node:events";
+import { readBoundedText, ResponseLimitError } from "./response-body.js";
+import { randomUUID } from "node:crypto";
 import { join } from "node:path";
-import { newSession, buildStepPrompt, extractDelta, applyDelta, type StateSession } from "./state.js";
+import {
+  buildStepPrompt,
+  commitTransition,
+  newSession,
+  parsePaperTransition,
+  validateTransition,
+  type StateSession,
+  type StateValueKind,
+} from "./state.js";
+import { latestObservation } from "./observation.js";
 import { estimateTokens, extractUsage } from "./token-estimate.js";
 import { CostLedger } from "./cost-ledger.js";
 import { CircuitBreaker, type CircuitBreakerConfig } from "./circuit-breaker.js";
 import { RateLimiter } from "./rate-limiter.js";
-import { costFor, gonkaCost } from "./pricing.js";
-import { normalizeIncoming, denormalizeResponse } from "./anthropic.js";
+import { gonkaCost, lookupPricing, type UpstreamPricing } from "./pricing.js";
+import {
+  AnthropicCompatibilityError,
+  AnthropicStreamAdapter,
+  denormalizeResponse,
+  normalizeIncoming,
+  type NormalizedRequest,
+} from "./anthropic.js";
+import { SessionStore, safeSessionId } from "./session-store.js";
+import { corsHeaders } from "./headers.js";
+import { normalizeConfigValues, HARDENING_DEFAULTS } from "./config.js";
+import {
+  requestUpstream,
+  TransportError,
+  type SelectedUpstream,
+  type TransportAttempt,
+} from "./transport.js";
+import { OpenAIStreamObserver, SseParser } from "./sse.js";
 
 export interface UpstreamConfig {
   name: string;
@@ -26,8 +50,9 @@ export interface UpstreamConfig {
   priority: number;
   tpm?: number;
   rpm?: number;
-  /** Settlement currency for the cost ledger. "usd" (default) or "gnk" (Gonka). */
   currency?: "usd" | "gnk";
+  headers?: Record<string, string>;
+  pricing?: UpstreamPricing;
 }
 
 export interface ProxyConfig {
@@ -38,18 +63,20 @@ export interface ProxyConfig {
   initialState: Record<string, unknown>;
   discardReasoning: boolean;
   costLedgerPath: string;
-  /** Maximum rollback-retry attempts on invalid (no-paper-format) ΔΣ (default 2). */
   maxRetries?: number;
-  /** Maximum request body size in bytes (default 1MB). */
   maxBodyBytes?: number;
-  /** Session TTL in ms. Sessions older than this are evicted on access (default 24h). */
   sessionTtlMs?: number;
-  /** Enable CORS headers for browser-based agents (default true). */
   cors?: boolean;
-  /** Circuit breaker config (threshold + cooldown). */
   circuitBreaker?: CircuitBreakerConfig;
-  /** Enable verbose request logging (default false). */
   verbose?: boolean;
+  maxStateBytes?: number;
+  maxPatchBytes?: number;
+  maxResponseCaptureBytes?: number;
+  stateTypes?: Record<string, StateValueKind>;
+  connectTimeoutMs?: number;
+  requestTimeoutMs?: number;
+  retryMaxAttempts?: number;
+  retryAfterCapMs?: number;
 }
 
 export const DEFAULT_CONFIG: ProxyConfig = {
@@ -61,24 +88,38 @@ export const DEFAULT_CONFIG: ProxyConfig = {
   discardReasoning: true,
   costLedgerPath: join(process.env.HOME ?? "/tmp", ".skillstate/spend.jsonl"),
   maxRetries: 2,
-  maxBodyBytes: 1_048_576, // 1 MB
-  sessionTtlMs: 24 * 60 * 60 * 1000, // 24 hours
+  maxBodyBytes: HARDENING_DEFAULTS.maxBodyBytes,
+  sessionTtlMs: 24 * 60 * 60 * 1000,
   cors: true,
+  maxStateBytes: HARDENING_DEFAULTS.maxStateBytes,
+  maxPatchBytes: HARDENING_DEFAULTS.maxPatchBytes,
+  maxResponseCaptureBytes: HARDENING_DEFAULTS.maxResponseCaptureBytes,
+  connectTimeoutMs: HARDENING_DEFAULTS.connectTimeoutMs,
+  requestTimeoutMs: HARDENING_DEFAULTS.requestTimeoutMs,
+  retryMaxAttempts: HARDENING_DEFAULTS.retryMaxAttempts,
+  retryAfterCapMs: HARDENING_DEFAULTS.retryAfterCapMs,
 };
 
-// ── Session persistence ──────────────────────────────────────────────
+type RuntimeConfig = ProxyConfig & Required<Pick<ProxyConfig,
+  "maxRetries" | "maxBodyBytes" | "sessionTtlMs" | "cors" | "maxStateBytes" |
+  "maxPatchBytes" | "maxResponseCaptureBytes" | "connectTimeoutMs" |
+  "requestTimeoutMs" | "retryMaxAttempts" | "retryAfterCapMs"
+>>;
 
-const sessions = new Map<string, { session: StateSession; lastAccess: number }>();
+type TransitionResult = {
+  status: "valid" | "invalid" | "tool-noop";
+  errors: string[];
+  action?: string;
+  committed: boolean;
+};
 
-function sessionFile(stateDir: string, id: string): string {
-  // id is validated by safeSessionId() before it ever reaches here
-  return join(stateDir, `${id}.json`);
-}
-
-/** Session IDs must be filesystem-safe: alphanumerics, dash, underscore, 1-128 chars. */
-function safeSessionId(id: string): string | null {
-  return /^[A-Za-z0-9_-]{1,128}$/.test(id) ? id : null;
-}
+type MeterTotals = {
+  knownUsd: number;
+  knownGnk: number;
+  knownUsdRows: number;
+  unknownPricing: boolean;
+  usageUnavailable: boolean;
+};
 
 function reqPath(url?: string): string {
   if (!url) return "";
@@ -86,107 +127,32 @@ function reqPath(url?: string): string {
   return q === -1 ? url : url.slice(0, q);
 }
 
-function loadSession(stateDir: string, id: string, ttlMs: number): StateSession | null {
-  const entry = sessions.get(id);
-  if (entry) {
-    if (Date.now() - entry.lastAccess > ttlMs) {
-      sessions.delete(id);
-    } else {
-      entry.lastAccess = Date.now();
-      return entry.session;
-    }
-  }
-  const f = sessionFile(stateDir, id);
-  if (existsSync(f)) {
-    try {
-      const age = Date.now() - statSync(f).mtimeMs;
-      if (age > ttlMs) {
-        try { unlinkSync(f); } catch { /* best effort */ }
-        return null;
-      }
-      const s = JSON.parse(readFileSync(f, "utf-8")) as StateSession;
-      sessions.set(id, { session: s, lastAccess: Date.now() });
-      return s;
-    } catch {
-      console.error(`[skillstate] corrupted session file: ${f}`);
-    }
-  }
-  return null;
-}
-
-function saveSession(stateDir: string, id: string, s: StateSession): void {
-  sessions.set(id, { session: s, lastAccess: Date.now() });
-  try {
-    if (!existsSync(stateDir)) mkdirSync(stateDir, { recursive: true });
-    writeFileSync(sessionFile(stateDir, id), JSON.stringify(s));
-  } catch (err: any) {
-    console.error(`[skillstate] failed to persist session ${id}: ${err?.message ?? err}`);
-  }
-}
-
-function gcSessions(ttlMs: number): void {
-  const now = Date.now();
-  for (const [k, v] of sessions) {
-    if (now - v.lastAccess > ttlMs) sessions.delete(k);
-  }
-}
-
-// ── Request helpers ──────────────────────────────────────────────────
-
-function getSessionId(req: IncomingMessage, body: any): string {
-  const hdr = req.headers["x-skillstate-session"];
-  if (typeof hdr === "string" && safeSessionId(hdr)) return hdr;
-  const sys = body?.messages?.find((m: any) => m.role === "system")?.content ?? body?.system ?? "";
-  const model = body?.model ?? "";
-  return createHash("sha256").update(String(sys) + "::" + model).digest("hex").slice(0, 24);
-}
-
 async function readBody(req: IncomingMessage, maxBytes: number): Promise<string> {
   const chunks: Buffer[] = [];
   let total = 0;
-  for await (const c of req) {
-    const buf = c as Buffer;
+  for await (const chunk of req) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
     total += buf.length;
-    if (total > maxBytes) {
-      throw new Error(`request body exceeded ${maxBytes} bytes`);
-    }
+    if (total > maxBytes) throw new Error(`request body exceeded ${maxBytes} bytes`);
     chunks.push(buf);
   }
-  return Buffer.concat(chunks).toString("utf-8");
+  return Buffer.concat(chunks).toString("utf8");
 }
 
-function isStreamRequest(body: any): boolean {
-  // Check parsed field, not raw string (avoids false positives inside string values)
-  return body?.stream === true;
-}
-
-function observationFromMessage(msg: any): string {
-  if (!msg) return "";
-  if (msg.role === "tool") {
-    return JSON.stringify({
-      role: "tool",
-      tool_call_id: msg.tool_call_id,
-      name: msg.name,
-      content: msg.content ?? "",
-    });
+function getSessionId(req: IncomingMessage): string {
+  const raw = req.headers["x-skillstate-session"];
+  if (typeof raw === "string") {
+    const sid = safeSessionId(raw);
+    if (sid) return sid;
   }
-  if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
-    return JSON.stringify({
-      role: "assistant",
-      content: msg.content ?? "",
-      tool_calls: msg.tool_calls,
-    });
-  }
-  if (typeof msg.content === "string") return msg.content;
-  return JSON.stringify(msg.content ?? "");
+  return randomUUID();
 }
 
 function rewriteBody(body: any, session: StateSession): { body: any; observation: string } {
-  const messages: any[] = body.messages ?? [];
-  const obsMsg = [...messages].reverse().find((m: any) => m.role !== "system");
-  const observation = observationFromMessage(obsMsg);
+  const messages: any[] = Array.isArray(body?.messages) ? body.messages : [];
+  const observation = latestObservation(messages);
   const { system, user } = buildStepPrompt(session, observation);
-  const { system: _drop, messages: _msgs, ...rest } = body;
+  const { system: _dropSystem, messages: _dropMessages, ...rest } = body ?? {};
   return {
     body: {
       ...rest,
@@ -196,127 +162,266 @@ function rewriteBody(body: any, session: StateSession): { body: any; observation
   };
 }
 
-function tryParseContent(sse: string): { content: string; inTok: number; outTok: number } {
-  if (sse.trim().startsWith("{")) {
-    try {
-      const j = JSON.parse(sse);
-      return {
-        content: j.choices?.[0]?.message?.content ?? "",
-        inTok: j.usage?.prompt_tokens ?? 0,
-        outTok: j.usage?.completion_tokens ?? 0,
-      };
-    } catch { /* fall through */ }
-  }
-  let content = "";
-  for (const line of sse.split("\n")) {
-    if (line.startsWith("data:")) {
-      const d = line.slice(5).trim();
-      if (d === "[DONE]") continue;
-      try {
-        const j = JSON.parse(d);
-        content += j.choices?.[0]?.delta?.content ?? "";
-      } catch { /* skip malformed SSE frame */ }
-    }
-  }
-  return { content, inTok: 0, outTok: 0 };
+function setCors(res: ServerResponse): void {
+  for (const [name, value] of Object.entries(corsHeaders())) res.setHeader(name, value);
 }
 
-// ── Upstream call ────────────────────────────────────────────────────
+const RESPONSE_HOP_BY_HOP = new Set([
+  "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
+  "te", "trailer", "transfer-encoding", "upgrade", "content-length", "content-encoding",
+]);
 
-interface UpstreamResult {
-  status: number;
-  body: string;
-  headers: Record<string, string>;
-  stream: boolean;
-}
-
-async function callUpstream(
-  upstream: UpstreamConfig,
-  path: string,
-  body: string,
-  isStream: boolean,
-): Promise<UpstreamResult> {
-  const u = new URL(upstream.url);
-  const root = u.pathname.replace(/\/v1\/?$/, "");
-  const target = `${u.origin}${root}${path}`;
-
-  const res = await fetch(target, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      ...(upstream.apiKey ? { authorization: `Bearer ${upstream.apiKey}` } : {}),
-    },
-    body,
-    signal: AbortSignal.timeout(180_000),
-  } as any);
-
-  const headers: Record<string, string> = {};
-  res.headers.forEach((v, k) => {
-    if (!["content-encoding", "transfer-encoding", "connection"].includes(k.toLowerCase())) {
-      headers[k] = v;
-    }
+function copyUpstreamResponseHeaders(response: Response, res: ServerResponse): void {
+  response.headers.forEach((value, rawName) => {
+    const name = rawName.toLowerCase();
+    if (RESPONSE_HOP_BY_HOP.has(name) || name.startsWith("x-skillstate-")) return;
+    res.setHeader(name, value);
   });
-
-  const text = await res.text();
-  return { status: res.status, body: text, headers, stream: isStream && text.includes("data:") };
 }
-
-// ── Set response headers (DRY) ───────────────────────────────────────
 
 function setCommonHeaders(
-  res: any,
+  res: ServerResponse,
   sid: string,
   session: StateSession,
   upstreamName: string,
-  warnings: string[],
+  transition: TransitionResult["status"] | "pending",
+  errors: string[] = [],
   extras: Record<string, string> = {},
 ): void {
   res.setHeader("x-skillstate-session", sid);
   res.setHeader("x-skillstate-step", String(session.step));
   res.setHeader("x-skillstate-statekeys", Object.keys(session.state).join(","));
   res.setHeader("x-skillstate-upstream", upstreamName);
-  if (warnings.length) res.setHeader("x-skillstate-validation", warnings.join("|"));
-  for (const [k, v] of Object.entries(extras)) res.setHeader(k, v);
+  res.setHeader("x-skillstate-transition", transition);
+  if (errors.length) res.setHeader("x-skillstate-validation", errors.join("|").slice(0, 4000));
+  for (const [name, value] of Object.entries(extras)) res.setHeader(name, value);
 }
 
-// ── Proxy entry point ────────────────────────────────────────────────
+function cleanToolCalls(json: any): any[] {
+  const raw = json?.choices?.[0]?.message?.tool_calls;
+  const calls = Array.isArray(raw)
+    ? raw.filter((call: any) => call?.type === "function" && typeof call?.function?.name === "string")
+    : [];
+  if (json?.choices?.[0]?.message) {
+    if (calls.length) json.choices[0].message.tool_calls = calls;
+    else delete json.choices[0].message.tool_calls;
+  }
+  return calls;
+}
+
+function evaluateTransition(
+  session: StateSession,
+  content: string,
+  toolCalls: any[],
+  config: RuntimeConfig,
+): TransitionResult {
+  const parsed = parsePaperTransition(content);
+
+  if (toolCalls.length > 0) {
+    if (parsed.ok && parsed.transition) {
+      const validation = validateTransition(session, parsed.transition, {
+        maxPatchBytes: config.maxPatchBytes,
+        maxStateBytes: config.maxStateBytes,
+        stateTypes: config.stateTypes,
+      });
+      if (validation.ok && validation.candidateState) {
+        commitTransition(session, validation.candidateState);
+        return { status: "valid", errors: [], action: parsed.transition.action, committed: true };
+      }
+      commitTransition(session, session.state);
+      return { status: "tool-noop", errors: validation.errors, committed: true };
+    }
+    commitTransition(session, session.state);
+    return { status: "tool-noop", errors: [], committed: true };
+  }
+
+  if (!parsed.ok || !parsed.transition) {
+    return { status: "invalid", errors: parsed.errors, committed: false };
+  }
+  const validation = validateTransition(session, parsed.transition, {
+    maxPatchBytes: config.maxPatchBytes,
+    maxStateBytes: config.maxStateBytes,
+    stateTypes: config.stateTypes,
+  });
+  if (!validation.ok || !validation.candidateState) {
+    return { status: "invalid", errors: validation.errors, action: parsed.transition.action, committed: false };
+  }
+  commitTransition(session, validation.candidateState);
+  return { status: "valid", errors: [], action: parsed.transition.action, committed: true };
+}
+
+function correctionRequest(serialized: string, errors: string[]): string {
+  try {
+    const body = JSON.parse(serialized);
+    const user = body?.messages?.[1];
+    if (user && typeof user.content === "string") {
+      const detail = errors.length ? ` Validation errors: ${errors.join("; ").slice(0, 800)}.` : "";
+      user.content += `\n\n[CORRECTION: Your previous reply was not a valid SKILL.state transition.${detail} Reply again with brief reasoning followed by exactly one JSON block containing exactly {\"state_patch\": {...}, \"action\": \"...\"}.]`;
+    }
+    return JSON.stringify(body);
+  } catch {
+    return serialized;
+  }
+}
+
+function modelFromBody(body: any, fallback = ""): string {
+  return typeof body?.model === "string" ? body.model : fallback;
+}
+
+function addMeteredCost(
+  totals: MeterTotals,
+  upstream: UpstreamConfig,
+  model: string,
+  inputTokens: number,
+  outputTokens: number,
+): { costUsd?: number; costGnk?: number; pricingStatus: "known" | "unknown" | "local-zero" } {
+  const pricing = lookupPricing(model, upstream.pricing);
+  const usd = pricing.costFor(inputTokens, outputTokens);
+  if (usd === null) totals.unknownPricing = true;
+  else {
+    totals.knownUsd += usd;
+    totals.knownUsdRows += 1;
+  }
+  const gnk = upstream.currency === "gnk" ? gonkaCost(inputTokens + outputTokens).gnk : undefined;
+  if (gnk !== undefined) totals.knownGnk += gnk;
+  return {
+    ...(usd !== null ? { costUsd: usd } : {}),
+    ...(gnk !== undefined ? { costGnk: gnk } : {}),
+    pricingStatus: pricing.status,
+  };
+}
+
+function meterGeneration(
+  ledger: CostLedger,
+  totals: MeterTotals,
+  upstream: UpstreamConfig,
+  model: string,
+  rawBody: string,
+  attemptKind: "generation" | "rollback-retry" | "stream",
+): { inputTokens: number; outputTokens: number } {
+  const usage = extractUsage(rawBody);
+  if (!usage) {
+    totals.usageUnavailable = true;
+    ledger.record({ ts: new Date().toISOString(), upstream: upstream.name, model,
+      inputTokens: 0, outputTokens: 0, pricingStatus: "usage-unavailable", attemptKind });
+    return { inputTokens: 0, outputTokens: 0 };
+  }
+  const usedModel = usage.model || model;
+  const costs = addMeteredCost(totals, upstream, usedModel, usage.inputTokens, usage.outputTokens);
+  ledger.record({
+    ts: new Date().toISOString(),
+    upstream: upstream.name,
+    model: usedModel,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
+    ...costs,
+    attemptKind,
+  });
+  return { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens };
+}
+
+function meterTransportAttempts(
+  ledger: CostLedger,
+  totals: MeterTotals,
+  attempts: TransportAttempt[],
+  configuredUpstreams: UpstreamConfig[],
+  fallbackModel: string,
+): void {
+  for (const attempt of attempts) {
+    if (typeof attempt.inputTokens !== "number" || typeof attempt.outputTokens !== "number") continue;
+    const upstream = configuredUpstreams.find(candidate => candidate.name === attempt.upstream);
+    if (!upstream) continue;
+    const model = attempt.model || fallbackModel;
+    const costs = addMeteredCost(totals, upstream, model, attempt.inputTokens, attempt.outputTokens);
+    ledger.record({
+      ts: new Date().toISOString(),
+      upstream: upstream.name,
+      model,
+      inputTokens: attempt.inputTokens,
+      outputTokens: attempt.outputTokens,
+      ...costs,
+      attemptKind: "transport-retry",
+    });
+  }
+}
+
+function costHeaders(totals: MeterTotals): Record<string, string> {
+  const extras: Record<string, string> = {};
+  if (totals.knownUsdRows > 0) extras["x-skillstate-cost-usd"] = totals.knownUsd.toFixed(6);
+  if (totals.knownGnk > 0) extras["x-skillstate-cost-gnk"] = totals.knownGnk.toFixed(6);
+  if (totals.unknownPricing) extras["x-skillstate-pricing"] = totals.knownUsdRows > 0 ? "partial" : "unknown";
+  else if (totals.usageUnavailable) extras["x-skillstate-pricing"] = "usage-unavailable";
+  else extras["x-skillstate-pricing"] = "known";
+  return extras;
+}
+
+async function writeChunk(res: ServerResponse, chunk: Uint8Array | string): Promise<void> {
+  if (res.destroyed || res.writableEnded) throw new Error("downstream closed");
+  if (!res.write(chunk)) {
+    const controller = new AbortController();
+    const closed = () => controller.abort(new Error("downstream closed before drain"));
+    res.once("close", closed);
+    try {
+      if (res.destroyed) closed();
+      await once(res, "drain", { signal: controller.signal });
+    } finally { res.removeListener("close", closed); }
+  }
+}
 
 export interface ProxyResult {
   port: number;
-  close: () => void;
+  close: () => Promise<void>;
   ledger: CostLedger;
   server: Server;
 }
 
 export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyResult> {
-  const config: ProxyConfig = { ...DEFAULT_CONFIG, ...cfg };
-  if (!existsSync(config.stateDir)) mkdirSync(config.stateDir, { recursive: true });
-
+  const merged = { ...DEFAULT_CONFIG, ...cfg } as RuntimeConfig;
+  const config = normalizeConfigValues(merged as any) as RuntimeConfig;
   const ledger = new CostLedger(config.costLedgerPath);
+  const store = new SessionStore({ stateDir: config.stateDir, ttlMs: config.sessionTtlMs });
+  const upstreams = [...config.upstreams].sort((a, b) => a.priority - b.priority);
   const limiters = new Map<string, RateLimiter>();
   const breakers = new Map<string, CircuitBreaker>();
-
-  for (const u of config.upstreams) {
-    limiters.set(u.name, new RateLimiter(u));
-    breakers.set(u.name, new CircuitBreaker(u.name, config.circuitBreaker));
+  for (const upstream of upstreams) {
+    limiters.set(upstream.name, new RateLimiter(upstream));
+    breakers.set(upstream.name, new CircuitBreaker(upstream.name, config.circuitBreaker));
   }
 
-  const upstreams = [...config.upstreams].sort((a, b) => a.priority - b.priority);
-  const maxBody = config.maxBodyBytes ?? 1_048_576;
-  const sessionTtl = config.sessionTtlMs ?? 24 * 60 * 60 * 1000;
-  const maxRetries = config.maxRetries ?? 2;
+  const requestSignals = new WeakMap<IncomingMessage, AbortSignal>();
+  const transport = (req: IncomingMessage, body: string | undefined, estimatedTokens: number, path = "/v1/chat/completions", method = "POST") =>
+    requestUpstream({
+      upstreams,
+      path,
+      method,
+      body,
+      incomingHeaders: req.headers,
+      signal: requestSignals.get(req),
+      maxResponseBytes: config.maxResponseCaptureBytes,
+      estimatedTokens,
+      limiters,
+      breakers,
+      connectTimeoutMs: config.connectTimeoutMs,
+      requestTimeoutMs: config.requestTimeoutMs,
+      retryMaxAttempts: config.retryMaxAttempts,
+      retryAfterCapMs: config.retryAfterCapMs,
+    });
 
-  // Periodic session GC (every 5 minutes)
-  const gcTimer = setInterval(() => gcSessions(sessionTtl), 5 * 60 * 1000);
-  gcTimer.unref();
+  const readSelected = async (selected: SelectedUpstream) => {
+    try { return await readBoundedText(selected.response, config.maxResponseCaptureBytes); }
+    finally { selected.finish(); }
+  };
 
   const server = createServer(async (req, res) => {
+    const downstream = new AbortController();
+    requestSignals.set(req, downstream.signal);
+    const disconnect = () => {
+      if (!res.writableEnded) downstream.abort(new Error("downstream client disconnected"));
+    };
+    res.once("close", disconnect);
     try {
-      // CORS headers
       if (config.cors) {
-        res.setHeader("access-control-allow-origin", "*");
-        res.setHeader("access-control-allow-methods", "GET, POST, DELETE, OPTIONS");
-        res.setHeader("access-control-allow-headers", "content-type, authorization, x-skillstate-session");
+        setCors(res);
         if (req.method === "OPTIONS") {
           res.statusCode = 204;
           res.end();
@@ -325,93 +430,98 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
       }
 
       if (config.verbose) {
-        const ts = new Date().toISOString();
-        console.log(`[${ts}] ${req.method} ${req.url} from ${req.socket.remoteAddress}`);
+        console.log(`[${new Date().toISOString()}] ${req.method} ${req.url} from ${req.socket.remoteAddress}`);
       }
 
       const path = reqPath(req.url);
-      const isChat =
-        (path === "/v1/chat/completions" || path === "/v1/messages") &&
-        req.method === "POST";
-      const isModels = path === "/v1/models" && req.method === "GET";
+      const isChat = (path === "/v1/chat/completions" || path === "/v1/messages") && req.method === "POST";
 
-      // ── /v1/models ──
-      if (isModels) {
-        const u = upstreams[0];
-        if (!u) { res.statusCode = 500; res.end(JSON.stringify({ error: "no upstream" })); return; }
-        const url = new URL(u.url);
-        const root = url.pathname.replace(/\/v1\/?$/, "");
-        const target = `${url.origin}${root}/v1/models`;
-        const r = await fetch(target, { headers: u.apiKey ? { authorization: `Bearer ${u.apiKey}` } : {} });
-        res.statusCode = r.status;
-        res.setHeader("content-type", "application/json");
-        res.end(await r.text());
+      if (path === "/v1/models" && req.method === "GET") {
+        try {
+          const selected = await transport(req, undefined, 0, "/v1/models", "GET");
+          res.statusCode = selected.response.status;
+          copyUpstreamResponseHeaders(selected.response, res);
+          const text = await readSelected(selected);
+          res.end(text);
+        } catch (error) {
+          if (error instanceof TransportError) {
+            res.statusCode = error.status;
+            res.setHeader("content-type", "application/json");
+            res.end(error.body);
+          } else throw error;
+        }
         return;
       }
 
-      // ── /health ──
       if (path === "/health" || path === "/v1/health") {
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
         res.end(JSON.stringify({
           ok: true,
-          upstreams: upstreams.map((u) => ({
-            name: u.name,
-            circuit: breakers.get(u.name)?.getState() ?? "unknown",
+          upstreams: upstreams.map(upstream => ({
+            name: upstream.name,
+            circuit: breakers.get(upstream.name)?.getState() ?? "unknown",
           })),
         }));
         return;
       }
 
-      // ── /state — inspect/reset a session's Σ (query: ?session=<sid>) ──
       if (path === "/state" || path === "/v1/state") {
-        const sidParam = new URL(req.url ?? "/state", "http://x").searchParams.get("session");
-        const safeSid = sidParam ? safeSessionId(sidParam) : null;
+        const sidParam = new URL(req.url ?? "/state", "http://skillstate.local").searchParams.get("session");
         if (req.method === "GET") {
           if (!sidParam) {
-            const ids = new Set<string>(sessions.keys());
-            try {
-              for (const name of readdirSync(config.stateDir)) {
-                if (name.endsWith(".json")) ids.add(name.slice(0, -5));
-              }
-            } catch { /* dir missing */ }
             res.statusCode = 200;
             res.setHeader("content-type", "application/json");
-            res.end(JSON.stringify({ sessions: [...ids] }));
+            res.end(JSON.stringify({ sessions: store.list() }));
             return;
           }
-          if (!safeSid) { res.statusCode = 400; res.end(JSON.stringify({ error: "invalid session id" })); return; }
-          const s = loadSession(config.stateDir, safeSid, sessionTtl);
-          if (!s) { res.statusCode = 404; res.end(JSON.stringify({ error: "session not found" })); return; }
+          const sid = safeSessionId(sidParam);
+          if (!sid) {
+            res.statusCode = 400;
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify({ error: "invalid session id" }));
+            return;
+          }
+          const session = store.get(sid);
+          if (!session) {
+            res.statusCode = 404;
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify({ error: "session not found" }));
+            return;
+          }
           res.statusCode = 200;
           res.setHeader("content-type", "application/json");
-          res.end(JSON.stringify({ session: safeSid, step: s.step, schema: s.schema, state: s.state }));
+          res.end(JSON.stringify({ session: sid, step: session.step, schema: session.schema, state: session.state }));
           return;
         }
         if (req.method === "DELETE") {
-          if (!sidParam) { res.statusCode = 400; res.end(JSON.stringify({ error: "missing ?session=" })); return; }
-          if (!safeSid) { res.statusCode = 400; res.end(JSON.stringify({ error: "invalid session id" })); return; }
-          sessions.delete(safeSid);
-          try {
-            const f = sessionFile(config.stateDir, safeSid);
-            if (existsSync(f)) unlinkSync(f);
-          } catch { /* best effort */ }
+          if (!sidParam) {
+            res.statusCode = 400;
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify({ error: "missing ?session=" }));
+            return;
+          }
+          const sid = safeSessionId(sidParam);
+          if (!sid) {
+            res.statusCode = 400;
+            res.setHeader("content-type", "application/json");
+            res.end(JSON.stringify({ error: "invalid session id" }));
+            return;
+          }
+          await store.withSessionLock(sid, () => store.delete(sid));
           res.statusCode = 204;
           res.end();
           return;
         }
       }
 
-      // ── /cost ──
       if (path === "/cost" || path === "/v1/cost") {
-        const s = ledger.summarize();
         res.statusCode = 200;
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify(s));
+        res.end(JSON.stringify(ledger.summarize()));
         return;
       }
 
-      // ── 404 ──
       if (!isChat) {
         res.statusCode = 404;
         res.setHeader("content-type", "application/json");
@@ -421,14 +531,13 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
         return;
       }
 
-      // ── Parse body ──
       let raw: string;
       try {
-        raw = await readBody(req, maxBody);
-      } catch (err: any) {
+        raw = await readBody(req, config.maxBodyBytes);
+      } catch (error: any) {
         res.statusCode = 413;
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify({ error: err.message }));
+        res.end(JSON.stringify({ error: error?.message ?? String(error) }));
         return;
       }
 
@@ -442,205 +551,255 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
         return;
       }
 
-      // ── Normalize Anthropic → OpenAI ──
-      const normalized = normalizeIncoming(req.url ?? "", body);
-      const isAnthropic = normalized?.source === "anthropic";
-      const sid = getSessionId(req, normalized?.raw ?? body);
-
-      let session = loadSession(config.stateDir, sid, sessionTtl);
-      if (!session) {
-        const spec = normalized?.messages.find((m: any) => m.role === "system")?.content ?? body.system ?? "You are a helpful agent.";
-        session = newSession(String(spec), config.initialState, config.schema);
-        saveSession(config.stateDir, sid, session);
-      }
-
-      // ── Rewrite to (P, Σ, O) ──
-      const toRewrite = normalized ? { ...normalized.raw, messages: normalized.messages } : body;
-      const { body: rewritten } = rewriteBody(toRewrite, session);
-      const upstreamBody = JSON.stringify(rewritten);
-      const estimated = estimateTokens(upstreamBody);
-      const stream = isStreamRequest(body);
-
-      // ── Upstream failover loop ──
-      let lastErr: { status: number; body: string } | null = null;
-
-      for (const u of upstreams) {
-        const lim = limiters.get(u.name)!;
-        const breaker = breakers.get(u.name)!;
-
-        const allow = lim.check(estimated);
-        if (!allow.ok) {
-          res.statusCode = 429;
-          res.setHeader("retry-after", String(allow.retryAfter ?? 60));
-          res.end(JSON.stringify({ error: `rate-limited by ${u.name}; retry after ${allow.retryAfter ?? 60}s` }));
-          return;
-        }
-
-        if (!breaker.canAttempt()) {
-          lastErr = { status: 503, body: JSON.stringify({ error: `circuit[${u.name}] open` }) };
-          continue;
-        }
-
-        try {
-          const upstreamRes = await callUpstream(u, "/v1/chat/completions", upstreamBody, stream);
-
-          if (upstreamRes.status >= 500 || upstreamRes.status === 429) {
-            breaker.recordFailure();
-            lastErr = { status: upstreamRes.status, body: upstreamRes.body };
-            continue;
-          }
-          if (upstreamRes.status >= 400) {
-            res.statusCode = upstreamRes.status;
-            res.setHeader("content-type", upstreamRes.headers["content-type"] ?? "application/json");
-            setCommonHeaders(res, sid, session, u.name, []);
-            res.end(upstreamRes.body);
-            return;
-          }
-
-          breaker.recordSuccess();
-          lim.record(estimated);
-
-          // ── Streaming response (buffered for state extraction) ──
-          if (upstreamRes.stream) {
-            const parsed = tryParseContent(upstreamRes.body);
-            const { delta } = extractDelta(parsed.content);
-            const { warnings } = applyDelta(session, delta);
-            saveSession(config.stateDir, sid, session);
-
-            const usage = extractUsage(upstreamRes.body);
-            const inputTokens = usage?.inputTokens ?? parsed.inTok;
-            const outputTokens = usage?.outputTokens ?? parsed.outTok;
-            const usd = costFor(body.model ?? "", inputTokens, outputTokens);
-            const gnk = u.currency === "gnk" ? gonkaCost(inputTokens + outputTokens).gnk : undefined;
-            ledger.record({ ts: new Date().toISOString(), upstream: u.name, model: body.model ?? "", inputTokens, outputTokens, costUsd: usd, costGnk: gnk });
-
-            res.statusCode = upstreamRes.status;
-            res.setHeader("content-type", "text/event-stream");
-            setCommonHeaders(res, sid, session, u.name, warnings);
-            res.end(upstreamRes.body);
-            return;
-          }
-
-          // ── Non-streaming response ──
-          let upstreamJson: any;
-          try {
-            upstreamJson = JSON.parse(upstreamRes.body);
-          } catch {
-            res.statusCode = upstreamRes.status;
-            res.setHeader("content-type", "application/json");
-            for (const [k, v] of Object.entries(upstreamRes.headers)) res.setHeader(k, v);
-            res.end(upstreamRes.body);
-            return;
-          }
-
-          // ── Rollback-retry (paper §"invalid patch triggers rollback-retry") ──
-          let attempts = 0;
-          let retriesUsed = 0;
-          let lastRetriedBody = upstreamBody;
-          let content: string = upstreamJson.choices?.[0]?.message?.content ?? "";
-          let ex = extractDelta(content);
-          let delta = ex.delta;
-          let modelRawJson = upstreamJson;
-          const rawToolCalls = upstreamJson.choices?.[0]?.message?.tool_calls;
-          const toolCalls = Array.isArray(rawToolCalls)
-            ? rawToolCalls.filter((tc: any) => tc?.function?.name)
-            : [];
-          const hasToolCalls = toolCalls.length > 0;
-          if (upstreamJson.choices?.[0]?.message) {
-            if (hasToolCalls) upstreamJson.choices[0].message.tool_calls = toolCalls;
-            else delete upstreamJson.choices[0].message.tool_calls;
-          }
-
-          // Tool-calling turns are first-class: do not rollback-retry them into a state_patch.
-          while (!hasToolCalls && ex.format !== "paper" && attempts < maxRetries && content.length > 0) {
-            try {
-              const parsed = JSON.parse(lastRetriedBody);
-              const um = parsed?.messages?.[1];
-              if (um && typeof um.content === "string") {
-                um.content += "\n\n[CORRECTION: Your previous reply did NOT include a structured ```json block with a `state_patch` key. Reply again with ONLY: (1) brief reasoning, (2) a single ```json block containing {\"state_patch\": {…}, \"action\": \"…\"}.]";
-              }
-              lastRetriedBody = JSON.stringify(parsed);
-            } catch {
-              break;
-            }
-
-            const retryRes = await callUpstream(u, "/v1/chat/completions", lastRetriedBody, false);
-            if (retryRes.status >= 500) {
-              breaker.recordFailure();
-              break;
-            }
-            breaker.recordSuccess();
-
-            try {
-              modelRawJson = JSON.parse(retryRes.body);
-            } catch {
-              break;
-            }
-            content = modelRawJson.choices?.[0]?.message?.content ?? "";
-            ex = extractDelta(content);
-            delta = ex.delta;
-            attempts++;
-            retriesUsed++;
-            if (ex.format === "paper") break;
-          }
-
-          const { warnings } = applyDelta(session, delta);
-          saveSession(config.stateDir, sid, session);
-
-          const usage = modelRawJson.usage ?? {};
-          const inputTokens = usage.prompt_tokens ?? 0;
-          const outputTokens = usage.completion_tokens ?? 0;
-          const usd = costFor(body.model ?? modelRawJson.model ?? "", inputTokens, outputTokens);
-          const gnk = u.currency === "gnk" ? gonkaCost(inputTokens + outputTokens).gnk : undefined;
-          ledger.record({ ts: new Date().toISOString(), upstream: u.name, model: body.model ?? modelRawJson.model ?? "", inputTokens, outputTokens, costUsd: usd, costGnk: gnk });
-
-          if (config.verbose) {
-            console.log(`[${new Date().toISOString()}] ${sid} step=${session.step} model=${body.model ?? modelRawJson.model} in=${inputTokens} out=${outputTokens} cost=$${usd.toFixed(6)}${retriesUsed > 0 ? ` retries=${retriesUsed}` : ""}`);
-          }
-
-          let outJson = modelRawJson;
-          if (isAnthropic && normalized) outJson = denormalizeResponse(normalized, modelRawJson);
-
-          res.statusCode = 200;
+      let normalized: NormalizedRequest | null;
+      try {
+        normalized = normalizeIncoming(req.url ?? "", body);
+      } catch (error) {
+        if (error instanceof AnthropicCompatibilityError) {
+          res.statusCode = error.statusCode;
           res.setHeader("content-type", "application/json");
-          setCommonHeaders(res, sid, session, u.name, warnings, {
-            "x-skillstate-cost-usd": usd.toFixed(6),
-            ...(gnk ? { "x-skillstate-cost-gnk": gnk.toFixed(6) } : {}),
-            ...(retriesUsed > 0 ? { "x-skillstate-retries": String(retriesUsed) } : {}),
-            ...(ex.action ? { "x-skillstate-action": ex.action.slice(0, 200) } : {}),
-          });
-          res.end(JSON.stringify(outJson));
+          res.end(JSON.stringify({ error: error.message }));
           return;
-        } catch (e: any) {
-          breaker.recordFailure();
-          lastErr = { status: 502, body: JSON.stringify({ error: e?.message ?? String(e) }) };
         }
+        throw error;
+      }
+      if (!normalized) {
+        res.statusCode = 400;
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({ error: "request must include model and messages" }));
+        return;
       }
 
-      // All upstreams failed
-      res.statusCode = lastErr?.status ?? 502;
+      const isAnthropic = normalized.source === "anthropic";
+      const sid = getSessionId(req);
+
+      await store.withSessionLock(sid, async () => {
+        if (res.destroyed || res.writableEnded) return;
+
+        let session = store.get(sid);
+        if (!session) {
+          const spec = normalized.messages.find((message: any) => message.role === "system")?.content
+            ?? (typeof body.system === "string" ? body.system : "You are a helpful agent.");
+          session = newSession(String(spec), config.initialState, config.schema);
+          store.save(sid, session);
+        }
+
+        // Work on a detached candidate. A failed durable save must not mutate the cache.
+        session = structuredClone(session);
+        const { body: rewritten } = rewriteBody(normalized.raw, session);
+        let requestBody = JSON.stringify(rewritten);
+        const estimated = estimateTokens(requestBody);
+        const wantsStream = body?.stream === true;
+        const totals: MeterTotals = {
+          knownUsd: 0, knownGnk: 0, knownUsdRows: 0, unknownPricing: false, usageUnavailable: false,
+        };
+
+        let selected: SelectedUpstream;
+        try {
+          selected = await transport(req, requestBody, estimated);
+          meterTransportAttempts(ledger, totals, selected.attempts, upstreams, modelFromBody(body));
+        } catch (error) {
+          if (error instanceof TransportError) {
+            meterTransportAttempts(ledger, totals, error.attempts, upstreams, modelFromBody(body));
+            res.statusCode = error.status;
+            res.setHeader("content-type", "application/json");
+            setCommonHeaders(res, sid, session, "none", "invalid", [error.message], costHeaders(totals));
+            res.end(error.body);
+            return;
+          }
+          throw error;
+        }
+
+        if (selected.response.status >= 400) {
+          res.statusCode = selected.response.status;
+          copyUpstreamResponseHeaders(selected.response, res);
+          setCommonHeaders(res, sid, session, selected.upstream.name, "invalid", [], costHeaders(totals));
+          const text = await readSelected(selected);
+          res.end(text);
+          return;
+        }
+
+        if (wantsStream) {
+          const upstream = selected.upstream as UpstreamConfig;
+          const observer = new OpenAIStreamObserver(config.maxResponseCaptureBytes);
+          const parser = isAnthropic ? new SseParser(config.maxResponseCaptureBytes) : null;
+          const anthropic = isAnthropic ? new AnthropicStreamAdapter(modelFromBody(body), `msg_${sid}`) : null;
+          const contentType = selected.response.headers.get("content-type") ?? "text/event-stream";
+
+          res.statusCode = selected.response.status;
+          copyUpstreamResponseHeaders(selected.response, res);
+          res.setHeader("content-type", isAnthropic ? "text/event-stream" : contentType);
+          setCommonHeaders(res, sid, session, upstream.name, "pending", [], costHeaders(totals));
+
+          const onClose = () => {
+            if (!res.writableEnded) selected.controller.abort(new Error("downstream client disconnected"));
+          };
+          res.once("close", onClose);
+
+          try {
+            if (!selected.response.body) throw new Error("upstream streaming response had no body");
+            const reader = selected.response.body.getReader();
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              observer.feed(value);
+              if (isAnthropic && observer.truncated) {
+                throw new ResponseLimitError(config.maxResponseCaptureBytes);
+              }
+              if (isAnthropic && parser && anthropic) {
+                for (const frame of parser.feed(value)) {
+                  for (const event of anthropic.push(frame.data)) await writeChunk(res, event);
+                }
+              } else {
+                await writeChunk(res, value);
+              }
+            }
+            if (isAnthropic && parser && anthropic) {
+              for (const frame of parser.end()) {
+                for (const event of anthropic.push(frame.data)) await writeChunk(res, event);
+              }
+              for (const event of anthropic.push("[DONE]")) await writeChunk(res, event);
+            }
+
+            const observed = observer.result();
+            const synthetic = JSON.stringify({
+              model: observed.model || modelFromBody(body),
+              ...(observed.usageAvailable ? { usage: { prompt_tokens: observed.inputTokens, completion_tokens: observed.outputTokens } } : {}),
+            });
+            meterGeneration(ledger, totals, upstream, observed.model || modelFromBody(body), synthetic, "stream");
+
+            const transition: TransitionResult = observed.truncated
+              ? { status: "invalid", errors: ["stream capture exceeded byte limit"], committed: false }
+              : evaluateTransition(session, observed.content, observed.toolCalls, config);
+            if (transition.committed) store.save(sid, session);
+            if (config.verbose && transition.status === "invalid") {
+              console.warn(`[skillstate] streamed transition invalid sid=${sid}: ${transition.errors.join("; ")}`);
+            }
+            res.end();
+          } catch (error: any) {
+            selected.controller.abort(error);
+            if (!res.headersSent) {
+              res.statusCode = 502;
+              res.setHeader("content-type", "application/json");
+              res.end(JSON.stringify({ error: error?.message ?? String(error) }));
+            } else if (!res.writableEnded) {
+              res.destroy(error instanceof Error ? error : undefined);
+            }
+          } finally {
+            res.removeListener("close", onClose);
+            selected.finish();
+          }
+          return;
+        }
+
+        let finalSelected = selected;
+        let finalText = await readSelected(selected);
+        let finalJson: any;
+        try { finalJson = JSON.parse(finalText); }
+        catch {
+          res.statusCode = selected.response.status;
+          copyUpstreamResponseHeaders(selected.response, res);
+          setCommonHeaders(res, sid, session, selected.upstream.name, "invalid", ["upstream response was not JSON"], costHeaders(totals));
+          res.end(finalText);
+          return;
+        }
+
+        let retriesUsed = 0;
+        let toolCalls = cleanToolCalls(finalJson);
+        let content = typeof finalJson?.choices?.[0]?.message?.content === "string"
+          ? finalJson.choices[0].message.content
+          : "";
+        let transition = evaluateTransition(structuredClone(session), content, toolCalls, config);
+        meterGeneration(ledger, totals, selected.upstream as UpstreamConfig, modelFromBody(body, finalJson?.model), finalText, "generation");
+
+        while (toolCalls.length === 0 && transition.status === "invalid" && retriesUsed < config.maxRetries) {
+          requestBody = correctionRequest(requestBody, transition.errors);
+          let retrySelected: SelectedUpstream;
+          try {
+            retrySelected = await transport(req, requestBody, estimateTokens(requestBody));
+            meterTransportAttempts(ledger, totals, retrySelected.attempts, upstreams, modelFromBody(body, finalJson?.model));
+          } catch (error) {
+            if (error instanceof TransportError) {
+              meterTransportAttempts(ledger, totals, error.attempts, upstreams, modelFromBody(body, finalJson?.model));
+              break;
+            }
+            throw error;
+          }
+          if (retrySelected.response.status >= 400) {
+            retrySelected.finish();
+            break;
+          }
+          const retryText = await readSelected(retrySelected);
+          let retryJson: any;
+          try { retryJson = JSON.parse(retryText); }
+          catch { break; }
+
+          retriesUsed += 1;
+          finalSelected = retrySelected;
+          finalText = retryText;
+          finalJson = retryJson;
+          toolCalls = cleanToolCalls(finalJson);
+          content = typeof finalJson?.choices?.[0]?.message?.content === "string"
+            ? finalJson.choices[0].message.content
+            : "";
+          transition = evaluateTransition(structuredClone(session), content, toolCalls, config);
+          meterGeneration(ledger, totals, retrySelected.upstream as UpstreamConfig, modelFromBody(body, finalJson?.model), retryText, "rollback-retry");
+        }
+
+        transition = evaluateTransition(session, content, toolCalls, config);
+        if (transition.committed) store.save(sid, session);
+
+        let outputJson = finalJson;
+        if (isAnthropic) outputJson = denormalizeResponse(normalized, finalJson);
+
+        res.statusCode = finalSelected.response.status;
+        copyUpstreamResponseHeaders(finalSelected.response, res);
+        res.setHeader("content-type", "application/json");
+        const extras = costHeaders(totals);
+        if (retriesUsed > 0) extras["x-skillstate-retries"] = String(retriesUsed);
+        if (transition.action) extras["x-skillstate-action"] = transition.action.slice(0, 200);
+        setCommonHeaders(res, sid, session, finalSelected.upstream.name, transition.status, transition.errors, extras);
+
+        if (config.verbose) {
+          console.log(`[${new Date().toISOString()}] ${sid} step=${session.step} model=${modelFromBody(body, finalJson?.model)} upstream=${finalSelected.upstream.name} transition=${transition.status}${retriesUsed ? ` rollback_retries=${retriesUsed}` : ""}`);
+        }
+        res.end(JSON.stringify(outputJson));
+      });
+    } catch (error: any) {
+      if (res.destroyed || res.writableEnded) return;
+      res.statusCode = error instanceof ResponseLimitError ? 502 : 500;
       res.setHeader("content-type", "application/json");
-      res.end(lastErr?.body ?? JSON.stringify({ error: "all upstreams failed" }));
-    } catch (e: any) {
-      res.statusCode = 500;
-      res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ error: e?.message ?? String(e) }));
+      res.end(JSON.stringify({ error: error?.message ?? String(error) }));
+    } finally {
+      res.removeListener("close", disconnect);
+      requestSignals.delete(req);
     }
   });
 
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => {
+      store.close();
+      reject(error);
+    };
+    server.once("error", onError);
     server.listen(config.listenPort, "127.0.0.1", () => {
-      const addr = server.address();
-      const port = addr && typeof addr === "object" ? addr.port : config.listenPort;
+      server.removeListener("error", onError);
+      const address = server.address();
+      const port = address && typeof address === "object" ? address.port : config.listenPort;
       console.log(`[skillstate] proxy on http://127.0.0.1:${port}`);
-      console.log(`[skillstate] upstreams: ${upstreams.map((u) => u.name + "@" + u.url + (u.tpm ? ` tpm=${u.tpm}` : "") + (u.rpm ? ` rpm=${u.rpm}` : "") + (u.currency ? ` currency=${u.currency}` : "")).join(", ")}`);
+      console.log(`[skillstate] upstreams: ${upstreams.map(u => `${u.name}@${u.url}${u.tpm ? ` tpm=${u.tpm}` : ""}${u.rpm ? ` rpm=${u.rpm}` : ""}${u.currency ? ` currency=${u.currency}` : ""}`).join(", ")}`);
       console.log(`[skillstate] state dir: ${config.stateDir}`);
       resolve({
         port,
-        close: () => {
-          clearInterval(gcTimer);
-          server.close();
-        },
+        close: () => new Promise<void>(closeResolve => {
+          store.close();
+          if (!server.listening) {
+            closeResolve();
+            return;
+          }
+          server.close(() => closeResolve());
+          server.closeIdleConnections?.();
+        }),
         ledger,
         server,
       });

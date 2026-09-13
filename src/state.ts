@@ -6,48 +6,47 @@
  *   - Σ_t  : structured execution state (JSON)
  *   - O_t  : latest observation from the environment
  *
- * The model emits (R_t, ΔΣ_t, a_t): reasoning + a `state_patch` ΔΣ_t + an
- * `action` a_t, in a single ```json ... ``` block:
+ * Persistent proxy transitions use the paper envelope:
+ *   { "state_patch": { ... }, "action": "..." }
  *
- *   ```json
- *   {
- *     "state_patch": { "key": newValue, "old_key": null },
- *     "action": "<string>"
- *   }
- *   ```
- *
- * Setting a key to `null` deletes it (null-deletion semantics).
- * The runtime validates ΔΣ_t deterministically; on failure it triggers a
- * rollback-retry (the proxy re-prompts the model). On success:
- *
- *     Σ_{t+1} = Σ_t ⊕ ΔΣ_t
- *
- * The reasoning R_t is then DISCARDED permanently and never appears in the
- * next prompt. Prompt size still depends on the specification, retained
- * values and latest observation; this module does not impose a byte budget.
- *
- * §3.1 Schema authoring: schemas are domain-level (e.g. InterCode CTF reuses
- * a single 5-field schema across all 100 instances). State is the ONLY
- * information that survives across steps.
+ * State mutation is transactional: parse -> validate -> candidate -> commit.
  */
 
+export type StateValueKind = "string" | "number" | "boolean" | "array" | "object";
+
 export interface StateSession {
-  /** Immutable procedural spec P (set once, usually the system message). */
   spec: string;
-  /** Mutable structured execution state Σ. */
   state: Record<string, unknown>;
-  /** Schema keys the state is allowed to carry (authored per domain). */
   schema: string[];
-  /** Step counter. */
+  stateTypes?: Record<string, StateValueKind>;
   step: number;
-  /** Whether the session has been bootstrapped (spec + initial state set). */
   initialized: boolean;
 }
 
-/**
- * Dictionary merge with null-deletion semantics: a key set to null (or
- * undefined) is deleted; otherwise the value overwrites/merges.
- */
+export interface PaperTransition {
+  state_patch: Record<string, unknown>;
+  action: string;
+}
+
+export interface ParsedPaperTransition {
+  ok: boolean;
+  transition?: PaperTransition;
+  reasoning: string;
+  errors: string[];
+}
+
+export interface TransitionValidationOptions {
+  maxPatchBytes?: number;
+  maxStateBytes?: number;
+  stateTypes?: Record<string, StateValueKind>;
+}
+
+export interface TransitionValidationResult {
+  ok: boolean;
+  candidateState?: Record<string, unknown>;
+  errors: string[];
+}
+
 export function mergeState(
   base: Record<string, unknown>,
   delta: Record<string, unknown>,
@@ -60,9 +59,9 @@ export function mergeState(
       typeof v === "object" &&
       !Array.isArray(v) &&
       typeof next[k] === "object" &&
+      next[k] !== null &&
       !Array.isArray(next[k])
     ) {
-      // recursive merge for nested objects (e.g. nested state maps)
       next[k] = mergeState(next[k] as Record<string, unknown>, v as Record<string, unknown>);
     } else {
       next[k] = v;
@@ -71,28 +70,140 @@ export function mergeState(
   return next;
 }
 
-/**
- * Extract a structured ΔΣ from a model's text output.
- *
- * Recognised encodings (in priority order):
- *   1. **Paper format (preferred).** A fenced ```json block whose top-level
- *      object has a `state_patch` key (aliases: `statePatch` / `delta` /
- *      `state` / `sigma`). May also carry `action` (or `command`).
- *   2. **Legacy fenced block.** A fenced ```json / state / delta / Σ block
- *      whose body IS the state dict (no `state_patch` wrapper).
- *   3. **Inline marker.** `@state {…}` / `STATE: {…}` / `ΔΣ: {…}` / `DELTA: {…}`.
- *   4. **Whole-output JSON.** The entire message is a JSON object that has a
- *      `state_patch` / `state` / `delta` / `sigma` key.
- *
- * Returns:
- *   - `delta`     : the parsed state patch (may be `{}` for a valid no-op).
- *   - `action`    : the model's chosen action string (paper format), else `undefined`.
- *   - `reasoning` : everything outside the JSON block (the discarded R_t).
- *   - `valid`     : `true` iff a paper-format `state_patch` was found.
- *                   The proxy uses this to trigger rollback-retry when the
- *                   model fails to emit a structured state update.
- *   - `format`    : which encoding matched (`"paper"` / `"legacy"` / `"none"`).
- */
+function tryJson(s: string): unknown {
+  try {
+    return JSON.parse(s.trim());
+  } catch {
+    return undefined;
+  }
+}
+
+function plainObject(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+function valueKind(v: unknown): StateValueKind | undefined {
+  if (Array.isArray(v)) return "array";
+  if (v !== null && typeof v === "object") return "object";
+  if (typeof v === "string") return "string";
+  if (typeof v === "number") return "number";
+  if (typeof v === "boolean") return "boolean";
+  return undefined;
+}
+
+function inferTypes(state: Record<string, unknown>): Record<string, StateValueKind> {
+  const out: Record<string, StateValueKind> = {};
+  for (const [key, value] of Object.entries(state)) {
+    const kind = valueKind(value);
+    if (kind) out[key] = kind;
+  }
+  return out;
+}
+
+function serializedBytes(value: unknown): number | null {
+  try {
+    const text = JSON.stringify(value);
+    return typeof text === "string" ? Buffer.byteLength(text, "utf8") : null;
+  } catch {
+    return null;
+  }
+}
+
+export function parsePaperTransition(text: string): ParsedPaperTransition {
+  let candidateText = text.trim();
+  let reasoning = "";
+  const fence = text.match(/```json\s*\n?([\s\S]*?)```/i);
+  if (fence) {
+    candidateText = fence[1]!.trim();
+    reasoning = text.replace(fence[0], "").trim();
+  }
+
+  const parsed = tryJson(candidateText);
+  if (!plainObject(parsed)) {
+    return { ok: false, reasoning, errors: ["transition must be a JSON object"] };
+  }
+
+  const keys = Object.keys(parsed).sort();
+  if (keys.length !== 2 || keys[0] !== "action" || keys[1] !== "state_patch") {
+    return {
+      ok: false,
+      reasoning,
+      errors: ["transition envelope must contain exactly state_patch and action"],
+    };
+  }
+  if (!plainObject(parsed.state_patch)) {
+    return { ok: false, reasoning, errors: ["state_patch must be a JSON object"] };
+  }
+  if (typeof parsed.action !== "string") {
+    return { ok: false, reasoning, errors: ["action must be a string"] };
+  }
+
+  return {
+    ok: true,
+    reasoning,
+    transition: { state_patch: parsed.state_patch, action: parsed.action },
+    errors: [],
+  };
+}
+
+export function validateTransition(
+  session: StateSession,
+  transition: PaperTransition,
+  options: TransitionValidationOptions = {},
+): TransitionValidationResult {
+  const errors: string[] = [];
+  const raw = transition as unknown as Record<string, unknown>;
+  const keys = plainObject(raw) ? Object.keys(raw).sort() : [];
+  if (keys.length !== 2 || keys[0] !== "action" || keys[1] !== "state_patch") {
+    errors.push("transition envelope must contain exactly state_patch and action");
+  }
+  if (!plainObject(transition?.state_patch)) errors.push("state_patch must be a JSON object");
+  if (typeof transition?.action !== "string") errors.push("action must be a string");
+  if (errors.length) return { ok: false, errors };
+
+  const patch = transition.state_patch;
+  const patchBytes = serializedBytes(patch);
+  if (patchBytes === null) errors.push("state patch is not JSON-serializable");
+  const maxPatchBytes = options.maxPatchBytes ?? 32_768;
+  if (patchBytes !== null && patchBytes > maxPatchBytes) {
+    errors.push(`state patch exceeds maxPatchBytes (${patchBytes} > ${maxPatchBytes})`);
+  }
+
+  const schema = session.schema;
+  if (schema.length > 0) {
+    for (const key of Object.keys(patch)) {
+      if (!schema.includes(key)) errors.push(`state key "${key}" is outside the configured schema`);
+    }
+  }
+
+  const contract = { ...(session.stateTypes ?? inferTypes(session.state)), ...(options.stateTypes ?? {}) };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null || value === undefined) continue;
+    const expected = contract[key];
+    const actual = valueKind(value);
+    if (expected && actual !== expected) {
+      errors.push(`state key "${key}" expected ${expected}, received ${actual ?? typeof value}`);
+    }
+  }
+
+  if (errors.length) return { ok: false, errors };
+
+  const candidateState = mergeState(session.state, patch);
+  const stateBytes = serializedBytes(candidateState);
+  if (stateBytes === null) errors.push("merged state is not JSON-serializable");
+  const maxStateBytes = options.maxStateBytes ?? 65_536;
+  if (stateBytes !== null && stateBytes > maxStateBytes) {
+    errors.push(`merged state exceeds maxStateBytes (${stateBytes} > ${maxStateBytes})`);
+  }
+
+  return errors.length ? { ok: false, errors } : { ok: true, candidateState, errors: [] };
+}
+
+export function commitTransition(session: StateSession, candidateState: Record<string, unknown>): void {
+  session.state = structuredClone(candidateState);
+  session.step += 1;
+}
+
 export function extractDelta(text: string): {
   delta: Record<string, unknown>;
   action?: string;
@@ -153,24 +264,12 @@ export function extractDelta(text: string): {
   return none;
 }
 
-function tryJson(s: string): unknown {
-  try {
-    return JSON.parse(s.trim());
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Build the prompt the upstream model receives: (P, Σ, O) only.
- * No history, no prior reasoning. Paper §3.2 prompt template (Appendix A.4).
- */
 export function buildStepPrompt(
   session: StateSession,
   observation: string,
   opts: { stateAsSystem?: boolean } = {},
 ): { system: string; user: string } {
-  // Paper §A.4: compact JSON (no whitespace) to minimize prompt tokens
+  void opts;
   const stateJson = JSON.stringify(session.state);
   const sys = [
     session.spec,
@@ -187,27 +286,13 @@ export function buildStepPrompt(
     "Provide your response with:",
     "1. Step-by-step reasoning (will be discarded after execution)",
     "2. A JSON block fenced with ```json ... ``` containing both your State Patch and your Action.",
-    '   The JSON block MUST have exactly these two keys:',
+    "   The JSON block MUST have exactly these two keys:",
     '   { "state_patch": { <dict: your state updates, set keys to null to delete> },',
     '     "action": "<string: the exact command you want to execute>" }',
   ].join("\n");
   return { system: sys, user: usr };
 }
 
-/**
- * Apply a delta to a session, enforcing schema when present, validating shape
- * (paper §"validated state update"), and increment step.
- *
- * Validation:
- *  - delta must be a plain JSON object (not array, not null)
- *  - each value must be JSON-serializable
- *  - when schema is set, only schema-allowed keys survive (out-of-schema are
- *    dropped; allowed values are not size-bounded by the key list)
- *
- * Returns the merged state plus a list of validation warnings (dropped keys,
- * unparseable values). The proxy can surface these via response header
- * `x-skillstate-validation`.
- */
 export function applyDelta(
   session: StateSession,
   delta: Record<string, unknown>,
@@ -226,9 +311,7 @@ export function applyDelta(
   let merged = mergeState(session.state, safeDelta);
   if (session.schema.length > 0) {
     const before = Object.keys(merged);
-    merged = Object.fromEntries(
-      Object.entries(merged).filter(([k]) => session.schema.includes(k)),
-    );
+    merged = Object.fromEntries(Object.entries(merged).filter(([k]) => session.schema.includes(k)));
     const dropped = before.filter(k => !Object.prototype.hasOwnProperty.call(merged, k));
     if (dropped.length > 0) warnings.push(`dropped out-of-schema keys: ${dropped.join(", ")}`);
   }
@@ -238,10 +321,12 @@ export function applyDelta(
 }
 
 export function newSession(spec: string, initialState: Record<string, unknown>, schema: string[]): StateSession {
+  const effectiveSchema = schema.length > 0 ? [...schema] : Object.keys(initialState);
   return {
     spec,
-    state: { ...initialState },
-    schema,
+    state: structuredClone(initialState),
+    schema: effectiveSchema,
+    stateTypes: inferTypes(initialState),
     step: 0,
     initialized: true,
   };

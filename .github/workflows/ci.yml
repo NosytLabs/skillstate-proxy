@@ -20,3 +20,14 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm test
+      - name: Smoke test packed package
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(npm pack --silent)"
+          TMP="$(mktemp -d)"
+          trap 'rm -rf "$TMP" "$TARBALL"' EXIT
+          npm install --prefix "$TMP" "$PWD/$TARBALL" --ignore-scripts --no-audit --no-fund
+          "$TMP/node_modules/.bin/skillstate" --version
+          "$TMP/node_modules/.bin/skillstate-proxy" --version
+          "$TMP/node_modules/.bin/skillstate" --help >/dev/null
