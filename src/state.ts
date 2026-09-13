@@ -1,3 +1,5 @@
+import { serializeState, DEFAULT_MAX_STATE_BYTES, isPlainRecord } from "./json-state.js";
+
 /**
  * SKILL.state runtime core — arXiv:2608.26263 (Badhe, Tiwari, Chung; EMNLP 2026).
  *
@@ -100,14 +102,6 @@ function inferTypes(state: Record<string, unknown>): Record<string, StateValueKi
   return out;
 }
 
-function serializedBytes(value: unknown): number | null {
-  try {
-    const text = JSON.stringify(value);
-    return typeof text === "string" ? Buffer.byteLength(text, "utf8") : null;
-  } catch {
-    return null;
-  }
-}
 
 export function parsePaperTransition(text: string): ParsedPaperTransition {
   let candidateText = text.trim();
@@ -152,21 +146,27 @@ export function validateTransition(
   options: TransitionValidationOptions = {},
 ): TransitionValidationResult {
   const errors: string[] = [];
-  const raw = transition as unknown as Record<string, unknown>;
-  const keys = plainObject(raw) ? Object.keys(raw).sort() : [];
-  if (keys.length !== 2 || keys[0] !== "action" || keys[1] !== "state_patch") {
+  const raw: unknown = transition;
+  if (!isPlainRecord(raw)) return { ok: false, errors: ["transition must be a plain JSON object"] };
+  const keys = Reflect.ownKeys(raw);
+  if (keys.length !== 2 || !keys.includes("state_patch") || !keys.includes("action")) {
     errors.push("transition envelope must contain exactly state_patch and action");
   }
-  if (!plainObject(transition?.state_patch)) errors.push("state_patch must be a JSON object");
-  if (typeof transition?.action !== "string") errors.push("action must be a string");
+  const patchField = Object.getOwnPropertyDescriptor(raw, "state_patch");
+  const actionField = Object.getOwnPropertyDescriptor(raw, "action");
+  if (!patchField || !("value" in patchField) || !patchField.enumerable || !isPlainRecord(patchField.value)) errors.push("state_patch must be a JSON data object");
+  if (!actionField || !("value" in actionField) || !actionField.enumerable || typeof actionField.value !== "string") errors.push("action must be a string data property");
   if (errors.length) return { ok: false, errors };
 
-  const patch = transition.state_patch;
-  const patchBytes = serializedBytes(patch);
-  if (patchBytes === null) errors.push("state patch is not JSON-serializable");
+  const patch = patchField!.value as Record<string, unknown>;
+
   const maxPatchBytes = options.maxPatchBytes ?? 32_768;
-  if (patchBytes !== null && patchBytes > maxPatchBytes) {
-    errors.push(`state patch exceeds maxPatchBytes (${patchBytes} > ${maxPatchBytes})`);
+  const maxStateBytes = options.maxStateBytes ?? DEFAULT_MAX_STATE_BYTES;
+  try {
+    serializeState(session.state, maxStateBytes, "current state");
+    serializeState(patch, maxPatchBytes, "state patch");
+  } catch (error) {
+    return { ok: false, errors: [error instanceof Error ? error.message : "invalid JSON state"] };
   }
 
   const schema = session.schema;
@@ -189,12 +189,8 @@ export function validateTransition(
   if (errors.length) return { ok: false, errors };
 
   const candidateState = mergeState(session.state, patch);
-  const stateBytes = serializedBytes(candidateState);
-  if (stateBytes === null) errors.push("merged state is not JSON-serializable");
-  const maxStateBytes = options.maxStateBytes ?? 65_536;
-  if (stateBytes !== null && stateBytes > maxStateBytes) {
-    errors.push(`merged state exceeds maxStateBytes (${stateBytes} > ${maxStateBytes})`);
-  }
+  try { serializeState(candidateState, maxStateBytes, "merged state"); }
+  catch (error) { errors.push(error instanceof Error ? error.message : "invalid merged state"); }
 
   return errors.length ? { ok: false, errors } : { ok: true, candidateState, errors: [] };
 }
