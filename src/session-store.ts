@@ -2,19 +2,26 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
-  readFileSync,
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readSync,
   renameSync,
-  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { StateSession, StateValueKind } from "./state.js";
+import { serializeState, DEFAULT_MAX_STATE_BYTES, byteLimit } from "./json-state.js";
 
 export interface SessionStoreOptions {
   stateDir: string;
   ttlMs: number;
+  maxStateBytes?: number;
+  maxSessionBytes?: number;
 }
 
 type Cached = { session: StateSession; lastAccess: number };
@@ -36,7 +43,7 @@ function validSession(value: unknown): value is StateSession {
   if (typeof value.spec !== "string") return false;
   if (!plainObject(value.state)) return false;
   if (!Array.isArray(value.schema) || !value.schema.every(v => typeof v === "string")) return false;
-  if (!Number.isInteger(value.step) || (value.step as number) < 0) return false;
+  if (!Number.isSafeInteger(value.step) || (value.step as number) < 0) return false;
   if (typeof value.initialized !== "boolean") return false;
   if (value.stateTypes !== undefined) {
     if (!plainObject(value.stateTypes) || !Object.values(value.stateTypes).every(validStateKind)) return false;
@@ -47,6 +54,8 @@ function validSession(value: unknown): value is StateSession {
 export class SessionStore {
   private readonly stateDir: string;
   private readonly ttlMs: number;
+  private readonly maxStateBytes: number;
+  private readonly maxSessionBytes: number;
   private readonly cache = new Map<string, Cached>();
   private readonly lockTails = new Map<string, Promise<void>>();
   private readonly gcTimer: ReturnType<typeof setInterval>;
@@ -54,6 +63,8 @@ export class SessionStore {
   constructor(options: SessionStoreOptions) {
     this.stateDir = options.stateDir;
     this.ttlMs = options.ttlMs;
+    this.maxStateBytes = byteLimit(options.maxStateBytes ?? DEFAULT_MAX_STATE_BYTES, "maxStateBytes");
+    this.maxSessionBytes = byteLimit(options.maxSessionBytes ?? this.maxStateBytes + 1_048_576, "maxSessionBytes");
     mkdirSync(this.stateDir, { recursive: true });
     this.gcTimer = setInterval(() => this.gcMemory(), Math.min(5 * 60_000, Math.max(1000, this.ttlMs)));
     this.gcTimer.unref();
@@ -78,47 +89,72 @@ export class SessionStore {
     if (cached) {
       if (now - cached.lastAccess <= this.ttlMs) {
         cached.lastAccess = now;
-        return cached.session;
+        return structuredClone(cached.session);
       }
       this.cache.delete(sid);
     }
 
     const file = this.path(sid);
-    if (!existsSync(file)) return null;
+    let fd: number | undefined;
     try {
-      if (now - statSync(file).mtimeMs > this.ttlMs) {
-        unlinkSync(file);
-        return null;
+      const before = lstatSync(file);
+      if (!before.isFile() || before.isSymbolicLink()) return null;
+      // Reject final-component links where supported; parent directory remains trusted.
+      fd = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+      const info = fstatSync(fd);
+      if (!info.isFile() || info.dev !== before.dev || info.ino !== before.ino || info.size > this.maxSessionBytes) return null;
+      if (now - info.mtimeMs > this.ttlMs) return null;
+      const chunks: Buffer[] = [];
+      const chunk = Buffer.alloc(Math.min(65_536, this.maxSessionBytes + 1));
+      let total = 0;
+      while (true) {
+        const count = readSync(fd, chunk, 0, Math.min(chunk.length, this.maxSessionBytes - total + 1), null);
+        if (!count) break;
+        total += count;
+        if (total > this.maxSessionBytes) return null;
+        chunks.push(Buffer.from(chunk.subarray(0, count)));
       }
-      const parsed: unknown = JSON.parse(readFileSync(file, "utf8"));
-      if (!validSession(parsed)) {
-        try { unlinkSync(file); } catch { /* best effort */ }
-        return null;
-      }
-      this.cache.set(sid, { session: parsed, lastAccess: now });
-      return parsed;
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks, total));
+      const parsed: unknown = JSON.parse(text);
+      this.encode(parsed);
+      const accepted = parsed as StateSession;
+      this.cache.set(sid, { session: accepted, lastAccess: now });
+      return structuredClone(accepted);
     } catch {
-      try { unlinkSync(file); } catch { /* best effort */ }
+      // Invalid/oversized/unreadable files are not deleted as a side effect of a read.
       return null;
+    } finally {
+      if (fd !== undefined) closeSync(fd);
     }
+  }
+
+  private encode(session: unknown): string {
+    const encoded = serializeState(session, this.maxSessionBytes, "session");
+    if (!validSession(session)) throw new Error("invalid session shape");
+    serializeState(session.state, this.maxStateBytes, "stored state");
+    if (new Set(session.schema).size !== session.schema.length || (session.schema.length && Object.keys(session.state).some(key => !session.schema.includes(key)))) {
+      throw new Error("stored state does not match its schema");
+    }
+    return encoded;
   }
 
   save(id: string, session: StateSession): void {
     const sid = safeSessionId(id);
     if (!sid) throw new Error("invalid session id");
-    if (!validSession(session)) throw new Error("invalid session shape");
+    const encoded = this.encode(session);
+    const accepted: StateSession = JSON.parse(encoded);
     mkdirSync(this.stateDir, { recursive: true });
     const target = this.path(sid);
     const temp = join(this.stateDir, `.${sid}.tmp-${process.pid}-${randomUUID()}`);
     try {
-      writeFileSync(temp, JSON.stringify(session), "utf8");
+      writeFileSync(temp, encoded, { encoding: "utf8", mode: 0o600, flag: "wx" });
       renameSync(temp, target);
     } finally {
       if (existsSync(temp)) {
         try { unlinkSync(temp); } catch { /* best effort */ }
       }
     }
-    this.cache.set(sid, { session, lastAccess: Date.now() });
+    this.cache.set(sid, { session: accepted, lastAccess: Date.now() });
   }
 
   delete(id: string): boolean {

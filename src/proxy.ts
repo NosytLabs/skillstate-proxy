@@ -379,7 +379,7 @@ export async function startProxy(cfg: Partial<ProxyConfig> = {}): Promise<ProxyR
   const merged = { ...DEFAULT_CONFIG, ...cfg } as RuntimeConfig;
   const config = normalizeConfigValues(merged as any) as RuntimeConfig;
   const ledger = new CostLedger(config.costLedgerPath);
-  const store = new SessionStore({ stateDir: config.stateDir, ttlMs: config.sessionTtlMs });
+  const store = new SessionStore({ stateDir: config.stateDir, ttlMs: config.sessionTtlMs, maxStateBytes: config.maxStateBytes, maxSessionBytes: config.maxStateBytes + config.maxBodyBytes + 65_536 });
   const upstreams = [...config.upstreams].sort((a, b) => a.priority - b.priority);
   const limiters = new Map<string, RateLimiter>();
   const breakers = new Map<string, CircuitBreaker>();

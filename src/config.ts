@@ -1,3 +1,4 @@
+import { serializeState, RESERVED_STATE_KEYS, byteLimit } from "./json-state.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -82,18 +83,32 @@ export function normalizeConfigValues<T extends NormalizableConfig>(input: T): T
   if (!Array.isArray(input.schema) || !input.schema.every(v => typeof v === "string")) throw new Error("schema must be an array of strings");
   if (!input.initialState || typeof input.initialState !== "object" || Array.isArray(input.initialState)) throw new Error("initialState must be a JSON object");
 
-  const maxBodyBytes = requirePositive("maxBodyBytes", input.maxBodyBytes ?? HARDENING_DEFAULTS.maxBodyBytes);
-  const maxStateBytes = requirePositive("maxStateBytes", input.maxStateBytes ?? HARDENING_DEFAULTS.maxStateBytes);
-  const maxPatchBytes = requirePositive("maxPatchBytes", input.maxPatchBytes ?? HARDENING_DEFAULTS.maxPatchBytes);
-  const maxResponseCaptureBytes = requirePositive("maxResponseCaptureBytes", input.maxResponseCaptureBytes ?? HARDENING_DEFAULTS.maxResponseCaptureBytes);
+  const maxBodyBytes = byteLimit(input.maxBodyBytes ?? HARDENING_DEFAULTS.maxBodyBytes, "maxBodyBytes");
+  const maxStateBytes = byteLimit(input.maxStateBytes ?? HARDENING_DEFAULTS.maxStateBytes, "maxStateBytes");
+  const maxPatchBytes = byteLimit(input.maxPatchBytes ?? HARDENING_DEFAULTS.maxPatchBytes, "maxPatchBytes");
+  const maxResponseCaptureBytes = byteLimit(input.maxResponseCaptureBytes ?? HARDENING_DEFAULTS.maxResponseCaptureBytes, "maxResponseCaptureBytes");
   const connectTimeoutMs = requirePositive("connectTimeoutMs", input.connectTimeoutMs ?? HARDENING_DEFAULTS.connectTimeoutMs);
   const requestTimeoutMs = requirePositive("requestTimeoutMs", input.requestTimeoutMs ?? HARDENING_DEFAULTS.requestTimeoutMs);
   const retryAfterCapMs = requirePositive("retryAfterCapMs", input.retryAfterCapMs ?? HARDENING_DEFAULTS.retryAfterCapMs);
   const retryMaxAttempts = requireInteger("retryMaxAttempts", input.retryMaxAttempts ?? HARDENING_DEFAULTS.retryMaxAttempts, 1);
   if (input.maxRetries !== undefined) requireInteger("maxRetries", input.maxRetries, 0);
 
+  if (input.schema.some(key => RESERVED_STATE_KEYS.has(key)) || new Set(input.schema).size !== input.schema.length) {
+    throw new Error("schema keys must be unique and must not be reserved");
+  }
+  const initialState = JSON.parse(serializeState(input.initialState, maxStateBytes, "initialState"));
+  if (input.schema.length && Object.keys(initialState).some(key => !input.schema.includes(key))) {
+    throw new Error("initialState contains a key outside the configured schema");
+  }
+  if (input.stateTypes !== undefined) {
+    serializeState(input.stateTypes, maxStateBytes, "stateTypes");
+    if (!Object.values(input.stateTypes as Record<string, unknown>).every(kind => ["string", "number", "boolean", "array", "object"].includes(String(kind)))) {
+      throw new Error("stateTypes contains an unsupported value kind");
+    }
+  }
   return {
     ...input,
+    initialState,
     stateDir: expandHomePath(input.stateDir),
     costLedgerPath: expandHomePath(input.costLedgerPath),
     schema: input.schema.length ? [...input.schema] : Object.keys(input.initialState),

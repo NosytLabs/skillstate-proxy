@@ -113,6 +113,13 @@ skillstate --schema step,notes,findings</code></pre>
       </div>
       <p>For overlapping settings, CLI flags take precedence over environment variables, then the configuration file, then defaults. Consult the installed version's help for supported values.</p>
       <p>Session state is persisted locally and can contain sensitive task information. The configured upstream receives the rewritten context. Keep the listener private, protect state and credentials, and review <a href="https://github.com/NosytLabs/skillstate-proxy/blob/main/SECURITY.md">SECURITY.md</a> before deployment.</p>
+      <p>Initial state, saved state and proposed patches are validated as plain JSON data.
+        Non-finite numbers, getters, sparse arrays, custom objects and reserved prototype-related keys are rejected;
+        nesting is limited to 64 levels. The configured state byte limit also applies at startup and when reloading sessions.</p>
+      <p>Saved-session reads reject invalid UTF-8, oversized records and final-component symbolic links.
+        Invalid files are left in place for diagnosis rather than deleted during a read; an explicit later save or reset can replace or remove them.
+        Keep the state directory and its parent directories private. These checks are not a sandbox or a distributed locking system.</p>
+
     </section>
     <section id="limits" aria-labelledby="limits-title">
       <h2 id="limits-title">Limits worth understanding</h2>
