@@ -110,7 +110,7 @@ async function callUpstream(
   const j = await r.json();
   const promptTokens = j.usage?.prompt_tokens ?? 0;
   const completionTokens = j.usage?.completion_tokens ?? 0;
-  const costUsd = j.cost?.usd ?? costFor(MODEL, promptTokens, completionTokens);
+  const costUsd = costFor(MODEL, promptTokens, completionTokens); // deterministic basis, same as skillstate path
   return {
     content: j.choices?.[0]?.message?.content ?? "",
     promptTokens,
@@ -180,7 +180,7 @@ async function main() {
       const j = await r.json();
       const p = j.usage?.prompt_tokens ?? 0;
       const c = j.usage?.completion_tokens ?? 0;
-      const u = j.cost?.usd ?? 0;
+      const u = costFor(MODEL, p, c); // deterministic basis, same as baseline path
       ssPrompt += p; ssComp += c; ssCost += u;
       ssSteps.push({ step: i + 1, promptTokens: p, completionTokens: c, costUsd: u });
       process.stdout.write(`\r  skillstate ${(i + 1).toString().padStart(2)}/${N}  prompt=${p.toString().padStart(5)}  cum=$${ssCost.toFixed(6)}`);

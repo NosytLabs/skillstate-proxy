@@ -28,9 +28,17 @@ const STEPS = Number(process.argv[2] ?? 10);
 const SKIP_BASELINE = process.argv[3] === "1";
 const MODEL = "deepseek-ai/DeepSeek-V4-Flash-0731";
 
-const envText = await Bun.file("/Users/tyson/Desktop/Code/products/cheapai/server/.env").text();
-const OBK = envText.split("\n").map(l => l.match(/^OPENBROKER_API_KEY=(.+)$/)).filter(Boolean)[0]?.[1].trim();
-if (!OBK) { console.error("no OPENBROKER_API_KEY in cheapai .env"); process.exit(1); }
+// Prefer OPENBROKER_API_KEY env; fall back to the local cheapai .env (dev default).
+const envText = process.env.OPENBROKER_API_KEY
+  ? ""
+  : await (async () => {
+      try {
+        return await Bun.file("/Users/tyson/Desktop/Code/products/cheapai/server/.env").text();
+      } catch { return ""; }
+    })();
+const _obkFromEnv = (envText.match(/^OPENBROKER_API_KEY=(.+)$/m)?.[1] ?? "").trim();
+const OBK = process.env.OPENBROKER_API_KEY ?? _obkFromEnv;
+if (!OBK) { console.error("Set OPENBROKER_API_KEY (or rely on the cheapai .env default)."); process.exit(1); }
 
 // ── Tools the model can call (real OpenAI tool-calling shape) ──
 const TOOLS = [
@@ -122,9 +130,10 @@ async function pipelineAppending(): Promise<Step[]> {
     const { j, ms } = await callWithRetry("https://api.openbroker.gonka.gg/v1",
       { model: MODEL, messages: transcript, tools: TOOLS, max_tokens: 350, temperature: 0.2 },
       { "Authorization": `Bearer ${OBK}`, "Content-Type": "application/json" });
+    const u = j.usage;
     rows.push({
-      prompt: j.usage?.prompt_tokens ?? messagesSnapshot.length / 4,  // fallback est if no usage
-      completion: j.usage?.completion_tokens ?? 0,
+      prompt: u?.prompt_tokens ?? (() => { throw new Error(`upstream omitted usage (step ${step + 1}) — cannot measure tokens fairly`); })(),
+      completion: u?.completion_tokens ?? 0,
       ms,
     });
     // execute any tool calls
@@ -144,7 +153,7 @@ async function pipelineDelta(): Promise<Step[]> {
   // client-side Σ grows only by findings + recent step count
   let state = { step: 0, findings: [] as Finding[], latest_obs: "" };
   const rows: Step[] = [];
-  const RUN_SESSION = `bench-B-${Date.now()}`; // one session per run: fresh Σ, no replay
+  const RUN_SESSION = `bench-B-${crypto.randomUUID().slice(0, 8)}`; // one session per run: fresh Σ, no replay + no collision
   for (let step = 0; step < Math.min(STEPS, TASKS.length); step++) {
     state.step = step + 1;
     state.latest_obs = TASKS[step]!;

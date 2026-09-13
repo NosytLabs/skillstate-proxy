@@ -75,10 +75,12 @@ describe("CostLedger — behavior contracts", () => {
 
   it("summarize excludes rows older than the time window", () => {
     const l = new CostLedger(ledgerPath);
-    const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
-    const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-    l.record({ ts: twoHoursAgo, upstream: "gonka", model: "x", inputTokens: 0, outputTokens: 0, costUsd: 0.01 });
-    l.record({ ts: oneHourAgo, upstream: "gonka", model: "y", inputTokens: 0, outputTokens: 0, costUsd: 0.02 });
+    // Use comfortable margins so ms-elapsed during the test body cannot flip the
+    // strict `getTime() < cutoff` comparison at the window boundary.
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    const halfHourAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    l.record({ ts: threeHoursAgo, upstream: "gonka", model: "x", inputTokens: 0, outputTokens: 0, costUsd: 0.01 });
+    l.record({ ts: halfHourAgo, upstream: "gonka", model: "y", inputTokens: 0, outputTokens: 0, costUsd: 0.02 });
     // 1h window: only the second row counts
     const s = l.summarize(60 * 60 * 1000);
     expect(s.totalUsd).toBeCloseTo(0.02, 6);

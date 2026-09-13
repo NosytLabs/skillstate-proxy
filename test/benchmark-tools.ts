@@ -209,7 +209,7 @@ async function main() {
     maxRetries: 2,
   });
   console.log("\n▸ SKILL.state (bounded + tools)...");
-  const sid = "tools-" + Date.now();
+  const sid = "tools-" + crypto.randomUUID().slice(0, 8);
   const skill = await runLoop("skillstate", `http://127.0.0.1:${ss.port}/v1`, { "x-skillstate-session": sid }, true);
   ss.close();
 
