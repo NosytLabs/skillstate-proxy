@@ -17,3 +17,5 @@ tmp/**/*
 .idea/
 coverage/
 .nyc_output/
+scratch/
+config-gonka-research.json

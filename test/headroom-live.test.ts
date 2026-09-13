@@ -74,6 +74,7 @@ describe.skipIf(!SHOULD_RUN)("Headroom live invariants (gonka chain)", () => {
     expect([
       "MiniMaxAI/MiniMax-M2.7",
       "deepseek-ai/DeepSeek-V4-Flash-0731",
+      "zai-org/GLM-5.3-Flash",
       "moonshotai/Kimi-K2.6",
     ]).toContain(m);
   });
