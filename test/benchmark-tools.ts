@@ -107,8 +107,10 @@ async function chat(url: string, messages: any[], extra: Record<string, string> 
   return JSON.parse(text);
 }
 
-function usage(j: any) {
-  const p = j.usage?.prompt_tokens ?? 0;
+function usage(j: any, label: string, step: number) {
+  if (j.error && !j.choices) throw new Error(`${label} step ${step} error body: ${JSON.stringify(j).slice(0, 200)}`);
+  if (j.usage?.prompt_tokens == null) throw new Error(`${label} step ${step} omitted usage — refusing silent 0`);
+  const p = j.usage.prompt_tokens;
   const c = j.usage?.completion_tokens ?? 0;
   return { p, c, usd: costFor(MODEL, p, c) };
 }
@@ -136,7 +138,7 @@ async function runLoop(label: string, url: string, extra: Record<string, string>
 
     try {
     let j = await chat(url, msgs, extra);
-    let u = usage(j);
+    let u = usage(j, label, i + 1);
     prompt += u.p; comp += u.c; usd += u.usd;
     let toolsThis = 0;
     let msg = j.choices?.[0]?.message ?? {};
@@ -173,7 +175,7 @@ async function runLoop(label: string, url: string, extra: Record<string, string>
         ? [history[0], user, msg, ...toolMsgs]
         : [...history, msg, ...toolMsgs];
       j = await chat(url, follow, extra);
-      u = usage(j);
+      u = usage(j, label, i + 1);
       prompt += u.p; comp += u.c; usd += u.usd;
       msg = { role: "assistant", content: j.choices?.[0]?.message?.content ?? "" };
     }
