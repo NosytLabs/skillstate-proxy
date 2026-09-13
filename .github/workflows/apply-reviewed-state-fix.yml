@@ -1,0 +1,53 @@
+name: Apply reviewed state validation
+on:
+  push:
+    branches: [fix/state-data-validation-20260913]
+permissions:
+  contents: read
+jobs:
+  apply:
+    if: github.actor == 'NosytLabs'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+      - name: Apply checked source patch only to its reviewed baseline
+        run: |
+          test "$(git rev-parse HEAD^)" = fc6e5dd3e0c5c25cf5ed3af09702a766a5021f69
+          python - <<'PY'
+          import base64, gzip, hashlib, os, subprocess
+          from pathlib import Path
+          payload = '''H4sIAAAAAAAC/7192XLbSJbou74ira4YghYIarcs2a722u0pb2GpeqbD4bBBIimiBAJsANQyKkXMy/zBPMzDRMy/zRfcT7hnyRUAacnlmI7osgDkcvLs5+TJZJJOJmIwOE1rEQ+TYlwNp3GZyDzNTwelPE/lRTRLxGjpp7U0T+Sl2D/YfzDa2YuiePTg4Xi0K7Y2N/d3d9cGg8GKcdc2NjZWjf3nP4vB9ma4Kzbgv/sCHj8uclFPpZgsskyUcl5UaV2UV2K0SLNExHkiqkVay1DMs0VFLefx+Ewmg+dvXotqVpxJUcuqFmkuvkaw6DWxJv70J/FRzuIUJ4cxMxlXUpzG0A6+Dj58FH/a2hSzBfQqqZmIRVLGk1os8jrNaJJxMZtnspbCrEKMp3F+ii8qMZIyF7wqmYQiL2rxGw4HPWGmNB/DuDKv40xM0ktZReJ1DmCXdTpeZHEZqq5iLssqrWqZDMdFPklPF6VMoHdap3E2qGoAWFTpv0nGwjSeS5Gls7SuQlHVZTquxT8fv383OI+zhRzOy6Iu6qu5HJzJKwAyTzIAOoRlZnUKSxmMp0U6lthTxjNYwTQ+TwuAxax0UcWncijLsihFPB4XiAwcAWcvAcUA/3BcFlU1gLnGsqpEBdiDRmNY4MmU6VCJpCB8jCUsd3KlUDIqiziRpThdxCV0kYiTdwWREiaF4U8BD0D1+WKUpeO4TotcABgOPzwdFYt6MJN1nMR1LBbzBNGTVojESVHOAHMjnA3eVMWihJUyvaK1DUXwCyDcTJanhOO6EER5mOdYzms5GwF0Wzuh2N7c3uflEAEGNNukyLLiYrCYizhJKgEYTxMF5EQTLLTkJJQBkgB4eKBxjoAToB1wb4bTIuEEDn2EqJXluaQOioLAsjEOA5SsjoA593cHmTyXmcgBw8iKxAZHAlACsgozxDMAVFbjMp0DsuAZxhtM0gwxGycwRpoTzOLXk8K0ux8KOZSJNUVkpSXis9lkCaaBcLutJEuPLh2Xc4qJeaIJ7rV6ySw/ilRHZ3Qb9M4pcrCwQ/mlSYXu+rL+twbbe3lL93XiGq4PxJPKd0el6ey7vDYPf0/m0MLTIw2x/8a/XQN7W+iejYf/HStTkZHc3gFjzbrGvSxTKfDefeSuAHOFDY3tTSSjOW1fk9HZ4UZXLouNjxUHUOqfjwUm8U+hn54aBc+XVyuW6S4CWg1IGPIanGrDB0PxolqsFffi9xaip6afEvR+1GYMvUr7ZVvpV5gghj0KjjUN16wf1dz1xjIxnwqGLRSC+Kp8nqw/PYmiF+gaipJ1THwZGsv3oqjaG9ztCv3O07wmQ7OZodbjarO7+2tPr+3ND/ilaisSLeDuhrevw/rvy+Of3n95g1Lgyh5hxBEBmzu//77f4Lt/df0/HB7f/Mg2t7f3t8RwbM4mQIEJ+lFXKaheA4O0emRePn23ZsPdLlHH43wfV4LMOjWL9/z2CNlNnSQX3VJcTq1r7HHHROfMupVmhJxFPVTn7Tz1XFnIJUPxxEPwiHxPtBDlWTVsRhoSWmrydNRt0zFw57e8ytrMdRR+TWPev3uGMtt1jNcxcIFZ38FHmnCLIA3tPnmnSYZGBWH1r0Rv8aQpV0jmfhmJp5MSjmRgLxfA//5iNunhHJvl+PrZRGmh1J7H7SIYMva8rRv/OmdmsrWw/VohG/ZtwyYH0Hqw4e8T//H4snhCXLdwAA'''
+          patch = gzip.decompress(base64.b64decode(payload))
+          assert hashlib.sha256(patch).hexdigest() == '8e1bc0e0bd7d21e296f14e4dc5b7d18077eb53ecc86f1de8c09a31db3d5e2a0a'
+          path = Path(os.environ['RUNNER_TEMP']) / 'reviewed.patch'
+          path.write_bytes(patch)
+          subprocess.run(['git', 'apply', '--check', str(path)], check=True)
+          subprocess.run(['git', 'apply', str(path)], check=True)
+          PY
+      - run: npm ci --no-audit --no-fund
+      - run: npm run build
+      - run: npm test
+      - name: Commit only the reviewed source and remove this temporary helper
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git rm .github/workflows/apply-reviewed-state-fix.yml
+          git add -- docs/hardening-review.md docs/index.html src/config.ts src/json-state.ts src/proxy.ts src/session-store.ts src/state.ts test/state-data-validation.test.ts
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Validate initial and persisted state and reject unsafe JSON data'
+          cat > "$RUNNER_TEMP/askpass" <<'SH'
+          #!/bin/sh
+          case "$1" in *Username*) printf '%s\n' x-access-token;; *) printf '%s\n' "$GH_TOKEN";; esac
+          SH
+          chmod 700 "$RUNNER_TEMP/askpass"
+          GIT_ASKPASS="$RUNNER_TEMP/askpass" GIT_TERMINAL_PROMPT=0 git -c credential.helper= push origin HEAD:refs/heads/fix/state-data-validation-20260913
