@@ -79,10 +79,12 @@ describe.skipIf(!SHOULD_RUN)("Headroom live invariants (gonka chain)", () => {
     ]).toContain(m);
   });
 
-  it("routes to the gonka upstream at http://127.0.0.1:4097/v1 (post-headroom)", async () => {
+  it("routes to the gonka upstream at http://127.0.0.1:4097/v1 (post-headroom)", { timeout: 90_000 }, async () => {
     // Probe the headroom's effective chat endpoint with a tiny request.
-    // We expect either 200 (worked end-to-end) or 429 (devshard concurrency cap).
-    // We do NOT expect 401 (broken auth wiring) or 5xx (broken chain).
+    // We expect either 200 (worked end-to-end) or 429 (devshard concurrency cap)
+    // or 503 (upstream breaker). Devshard queues can stall 60-80s, so the client
+    // timeout must exceed the skillstate/proxy retry budget. We do NOT expect
+    // 401 (broken auth wiring) or 5xx-other (broken chain).
     const r = await fetch(`${HEADROOM_URL}/v1/chat/completions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -91,7 +93,8 @@ describe.skipIf(!SHOULD_RUN)("Headroom live invariants (gonka chain)", () => {
         messages: [{ role: "user", content: "ok" }],
         max_tokens: 8,
       }),
+      signal: AbortSignal.timeout(80_000), // abort before vitest's 90s
     });
     expect([200, 429, 503]).toContain(r.status);
-  }, 30_000);
+  });
 });
