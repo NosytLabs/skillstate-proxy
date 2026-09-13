@@ -108,7 +108,9 @@ async function callUpstream(
     throw new Error(`Upstream ${label} failed (${r.status}): ${err.slice(0, 200)}`);
   }
   const j = await r.json();
-  const promptTokens = j.usage?.prompt_tokens ?? 0;
+  if (j.error && !j.choices) throw new Error(`Upstream ${label} error body (status ${r.status}): ${JSON.stringify(j).slice(0, 200)}`);
+  if (j.usage?.prompt_tokens == null) throw new Error(`Upstream ${label} omitted usage — refusing to record a silent 0-token step`);
+  const promptTokens = j.usage.prompt_tokens;
   const completionTokens = j.usage?.completion_tokens ?? 0;
   const costUsd = costFor(MODEL, promptTokens, completionTokens); // deterministic basis, same as skillstate path
   return {
@@ -178,7 +180,10 @@ async function main() {
         body: JSON.stringify(body),
       });
       const j = await r.json();
-      const p = j.usage?.prompt_tokens ?? 0;
+      if (!r.ok) throw new Error(`skillstate proxy step ${i + 1} failed (${r.status}): ${JSON.stringify(j).slice(0, 200)}`);
+      if (j.error && !j.choices) throw new Error(`skillstate proxy step ${i + 1} error body: ${JSON.stringify(j).slice(0, 200)}`);
+      if (j.usage?.prompt_tokens == null) throw new Error(`skillstate proxy step ${i + 1} omitted usage — refusing silent 0`);
+      const p = j.usage.prompt_tokens;
       const c = j.usage?.completion_tokens ?? 0;
       const u = costFor(MODEL, p, c); // deterministic basis, same as baseline path
       ssPrompt += p; ssComp += c; ssCost += u;
