@@ -52,6 +52,7 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   "claude-sonnet-4-5": { input: 3.75, output: 18.75, cacheRead: 0.38, source: "Venice Claude Sonnet 4.5 model page", asOf: "2026-09-10" },
   "claude-opus-4-5": { input: 6, output: 30, cacheRead: 0.60, source: "Venice Claude Opus 4.5 model page", asOf: "2026-09-10" },
   "openai-gpt-56-sol": { input: 6.25, output: 37.50, cacheRead: 0.63, source: "Venice GPT-5.6 Sol model page", asOf: "2026-09-10" },
+
 };
 
 function bundledPrice(model: string): ModelPrice | undefined {
