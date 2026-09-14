@@ -10,6 +10,14 @@
  */
 import { startProxy } from "../src/proxy.js";
 import { costFor, gonkaCost } from "../src/pricing.js";
+import {
+  backoffMs,
+  contextGrowth,
+  isRetryableStatus,
+  perCallPrompt,
+  verdict as computeVerdict,
+  type ArmResult,
+} from "./bench-harness.js";
 
 const API_KEY = process.env.SKILLSTATE_API_KEY;
 const UPSTREAM = process.env.SKILLSTATE_UPSTREAM ?? "https://api.venice.ai/api/v1";
@@ -253,7 +261,6 @@ if (!SCENARIO) {
 // measurement; a step that exhausts its retries still counts as a real failure.
 const RETRIES = Number(process.env.SKILLSTATE_RETRIES ?? 4);
 const RETRY_BASE_MS = Number(process.env.SKILLSTATE_RETRY_BASE_MS ?? 3000);
-const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 async function chat(url: string, messages: any[], extra: Record<string, string> = {}) {
   let lastErr: Error = new Error("no attempt made");
@@ -279,7 +286,7 @@ async function chat(url: string, messages: any[], extra: Record<string, string> 
       const text = await r.text();
       if (!r.ok) {
         const err = new Error(`${r.status} ${text.slice(0, 240)}`);
-        if (!RETRYABLE.has(r.status)) throw err;
+        if (!isRetryableStatus(r.status)) throw err;
         lastErr = err;
       } else {
         if (attempt > 0) {
@@ -291,7 +298,7 @@ async function chat(url: string, messages: any[], extra: Record<string, string> 
       lastErr = e;
     }
     if (attempt < RETRIES) {
-      const wait = RETRY_BASE_MS * Math.pow(2, attempt);
+      const wait = backoffMs(attempt, RETRY_BASE_MS);
       process.stderr.write(
         `\n  ↻ ${String(lastErr.message).slice(0, 60)} — retry ${attempt + 1}/${RETRIES} in ${wait}ms`,
       );
@@ -420,23 +427,15 @@ async function main() {
   const gnk = gonkaCost(base.prompt + base.comp, GNK_USD);
   const gnkSs = gonkaCost(skill.prompt + skill.comp, GNK_USD);
 
-  const baseAvg = base.apiCalls ? base.prompt / base.apiCalls : 0;
-  const ssAvg = skill.apiCalls ? skill.prompt / skill.apiCalls : 0;
-  const avgPct = baseAvg > 0 ? ((baseAvg - ssAvg) / baseAvg) * 100 : 0;
-  const growth = (s: typeof base) => {
-    const nz = s.steps.filter((x) => x.prompt > 0);
-    return nz.length ? nz[nz.length - 1].prompt / nz[0].prompt : 0;
-  };
-  const fair = base.apiCalls === skill.apiCalls;
-  // Failed steps are recorded with prompt=0, which silently deflates totals and
-  // can invent a fake win. Treat any failure as invalidating the comparison.
-  const failed = base.failures + skill.failures;
-  const valid = failed === 0;
-  const invalidBanner = valid
-    ? ""
-    : `\n  ⚠ INVALID RUN — ${failed} failed step(s) (baseline ${base.failures}, skillstate ${skill.failures}).\n` +
-      `    Failed steps are counted as 0 tokens, which UNDERSTATES one arm and can\n` +
-      `    fabricate savings. Numbers below are NOT a result. Re-run when upstream is healthy.\n`;
+  // All validity/metric maths lives in bench-harness.ts so it is unit-tested —
+  // these are the values that silently went wrong twice before.
+  const v = computeVerdict(base as ArmResult, skill as ArmResult);
+  const valid = v.valid;
+  const fair = v.fairRaw;
+  const invalidBanner = v.banner;
+  const avgPct = v.perCallDeltaPct;
+  const baseAvg = perCallPrompt(base as ArmResult);
+  const ssAvg = perCallPrompt(skill as ArmResult);
 
   console.log(`${invalidBanner}
 ${"═".repeat(60)}
@@ -450,8 +449,8 @@ ${"═".repeat(60)}
     baseline    ${baseAvg.toFixed(0)} prompt tokens/call
     skillstate  ${ssAvg.toFixed(0)} prompt tokens/call   (${avgPct >= 0 ? "-" : "+"}${Math.abs(avgPct).toFixed(1)}%)
   CONTEXT GROWTH (first->last step):
-    baseline    ${growth(base).toFixed(2)}x
-    skillstate  ${growth(skill).toFixed(2)}x
+    baseline    ${contextGrowth(base.steps).toFixed(2)}x
+    skillstate  ${contextGrowth(skill.steps).toFixed(2)}x
   ${fair ? "" : "NOTE: arms made different numbers of calls, so RAW SAVINGS is NOT a like-for-like\n        comparison — read PER-CALL and CONTEXT GROWTH instead.\n"}
   GONKA est:    baseline ${gnk.gnk.toFixed(6)} GNK (${usdText(gnk.usd)})
                 skillstate ${gnkSs.gnk.toFixed(6)} GNK (${usdText(gnkSs.usd)})
