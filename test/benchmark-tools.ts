@@ -246,27 +246,59 @@ if (!SCENARIO) {
   process.exit(2);
 }
 
+// Transient upstream failures (502 connect timeout, 503 circuit-open, 429) are
+// common on the devshard. Without retries a SINGLE stall trips the proxy's
+// circuit breaker and cascades into every later step failing — discarding a
+// whole run. Retry with backoff so a brief blip doesn't invalidate the
+// measurement; a step that exhausts its retries still counts as a real failure.
+const RETRIES = Number(process.env.SKILLSTATE_RETRIES ?? 4);
+const RETRY_BASE_MS = Number(process.env.SKILLSTATE_RETRY_BASE_MS ?? 3000);
+const RETRYABLE = new Set([408, 425, 429, 500, 502, 503, 504]);
+
 async function chat(url: string, messages: any[], extra: Record<string, string> = {}) {
-  const r = await fetch(`${url}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${API_KEY}`,
-      ...extra,
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      stream: false,
-      max_tokens: 400,
-      temperature: 0.2,
-      tools: SCENARIO.tools,
-      tool_choice: "auto",
-      messages,
-    }),
-  });
-  const text = await r.text();
-  if (!r.ok) throw new Error(`${r.status} ${text.slice(0, 240)}`);
-  return JSON.parse(text);
+  let lastErr: Error = new Error("no attempt made");
+  for (let attempt = 0; attempt <= RETRIES; attempt++) {
+    try {
+      const r = await fetch(`${url}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${API_KEY}`,
+          ...extra,
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          stream: false,
+          max_tokens: 400,
+          temperature: 0.2,
+          tools: SCENARIO.tools,
+          tool_choice: "auto",
+          messages,
+        }),
+      });
+      const text = await r.text();
+      if (!r.ok) {
+        const err = new Error(`${r.status} ${text.slice(0, 240)}`);
+        if (!RETRYABLE.has(r.status)) throw err;
+        lastErr = err;
+      } else {
+        if (attempt > 0) {
+          process.stderr.write(`\n  ↻ recovered on attempt ${attempt + 1}\n`);
+        }
+        return JSON.parse(text);
+      }
+    } catch (e: any) {
+      lastErr = e;
+    }
+    if (attempt < RETRIES) {
+      const wait = RETRY_BASE_MS * Math.pow(2, attempt);
+      process.stderr.write(
+        `\n  ↻ ${String(lastErr.message).slice(0, 60)} — retry ${attempt + 1}/${RETRIES} in ${wait}ms`,
+      );
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+  throw lastErr;
 }
 
 function usage(j: any, label: string, step: number) {
