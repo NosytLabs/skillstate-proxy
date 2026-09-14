@@ -134,7 +134,7 @@ async function runLoop(label: string, url: string, extra: Record<string, string>
         "You are a security-review agent. Use record_finding and mark_file. Keep notes short. After tools, continue.",
     },
   ];
-  let prompt = 0, comp = 0, usd = 0, toolCalls = 0, apiCalls = 0;
+  let prompt = 0, comp = 0, usd = 0, toolCalls = 0, apiCalls = 0, failures = 0;
   const steps: { step: number; prompt: number; tools: number }[] = [];
 
   for (let i = 0; i < N; i++) {
@@ -195,13 +195,14 @@ async function runLoop(label: string, url: string, extra: Record<string, string>
     steps.push({ step: i + 1, prompt: u.p, tools: toolsThis });
     process.stdout.write(`\r  ${label} ${(i + 1).toString().padStart(2)}/${N}  prompt=${u.p.toString().padStart(5)}  tools=${toolCalls}`);
     } catch (e: any) {
+      failures += 1;
       console.error(`\n  ⚠ step ${i + 1}: ${e.message}`);
       steps.push({ step: i + 1, prompt: 0, tools: 0 });
     }
     if (i < N - 1) await new Promise((r) => setTimeout(r, 250));
   }
   console.log();
-  return { prompt, comp, usd, toolCalls, apiCalls, steps, files: store.files.size, findings: store.findings.length };
+  return { prompt, comp, usd, toolCalls, apiCalls, failures, steps, files: store.files.size, findings: store.findings.length };
 }
 
 async function main() {
@@ -237,13 +238,22 @@ async function main() {
     return nz.length ? nz[nz.length - 1].prompt / nz[0].prompt : 0;
   };
   const fair = base.apiCalls === skill.apiCalls;
+  // Failed steps are recorded with prompt=0, which silently deflates totals and
+  // can invent a fake win. Treat any failure as invalidating the comparison.
+  const failed = base.failures + skill.failures;
+  const valid = failed === 0;
+  const invalidBanner = valid
+    ? ""
+    : `\n  ⚠ INVALID RUN — ${failed} failed step(s) (baseline ${base.failures}, skillstate ${skill.failures}).\n` +
+      `    Failed steps are counted as 0 tokens, which UNDERSTATES one arm and can\n` +
+      `    fabricate savings. Numbers below are NOT a result. Re-run when upstream is healthy.\n`;
 
-  console.log(`
+  console.log(`${invalidBanner}
 ${"═".repeat(60)}
-  TOOL-CALL RESULTS — ${N} steps · ${MODEL}
+  TOOL-CALL RESULTS — ${N} steps · ${MODEL}${valid ? "" : "  [INVALID]"}
 ${"═".repeat(60)}
-  BASELINE:     ${base.prompt.toLocaleString()} prompt · ${base.apiCalls} upstream calls (${base.toolCalls} tool_calls) · ${base.findings} findings
-  SKILL.state:  ${skill.prompt.toLocaleString()} prompt · ${skill.apiCalls} upstream calls (${skill.toolCalls} tool_calls) · ${skill.findings} findings
+  BASELINE:     ${base.prompt.toLocaleString()} prompt · ${base.apiCalls} upstream calls (${base.toolCalls} tool_calls) · ${base.findings} findings · ${base.failures} failed
+  SKILL.state:  ${skill.prompt.toLocaleString()} prompt · ${skill.apiCalls} upstream calls (${skill.toolCalls} tool_calls) · ${skill.findings} findings · ${skill.failures} failed
   RAW SAVINGS:  ${saved.toLocaleString()} prompt tokens (${pct}%)   <-- only meaningful when call counts match
 
   PER-CALL (the fair, workload-independent metric):
