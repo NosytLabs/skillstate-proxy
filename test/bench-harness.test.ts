@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import {
   backoffMs,
   contextGrowth,
@@ -134,5 +136,50 @@ describe("verdict", () => {
     expect(v.perCallDeltaPct).toBe(0);
     expect(v.rawSavingsPct).toBe(0);
     expect(Number.isNaN(v.perCallDeltaPct)).toBe(false);
+  });
+});
+
+describe("scenario wiring", () => {
+  // The scenario registry lives in the benchmark script (not importable without
+  // running it), so guard the wiring from the outside: every advertised use case
+  // must have an npm script AND actually be defined in the harness.
+  const SCENARIOS = ["security", "research", "email", "coding"];
+  const root = join(__dirname, "..");
+  const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  const script = readFileSync(join(root, "test", "benchmark-tools.ts"), "utf8");
+
+  it("exposes an npm script for every documented scenario", () => {
+    for (const s of SCENARIOS) {
+      const name = s === "security" ? "bench:tools" : `bench:${s}`;
+      expect(pkg.scripts[name], `missing npm script ${name}`).toBeTruthy();
+    }
+  });
+
+  it("each scenario script selects that scenario via SKILLSTATE_SCENARIO", () => {
+    for (const s of SCENARIOS.filter((x) => x !== "security")) {
+      expect(pkg.scripts[`bench:${s}`]).toContain(`SKILLSTATE_SCENARIO=${s}`);
+    }
+  });
+
+  it("defines every scenario key in the harness", () => {
+    for (const s of SCENARIOS) {
+      expect(script, `scenario '${s}' not defined`).toMatch(new RegExp(`\\n  ${s}: \\{`));
+    }
+  });
+
+  it("resets per-arm state for each scenario's store", () => {
+    // A store not reset between arms leaks the baseline's artifacts into the
+    // skillstate numbers and silently corrupts the comparison.
+    for (const store of [
+      "researchStore.notes",
+      "researchStore.questions",
+      "emailStore.labels",
+      "emailStore.drafts",
+      "codingStore.reads",
+      "codingStore.edits",
+    ]) {
+      expect(script, `${store} not reset per arm`).toContain(`${store}.length = 0;`);
+    }
+    expect(script).toContain("codingStore.suites = 0;");
   });
 });

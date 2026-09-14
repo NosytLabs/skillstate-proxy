@@ -160,6 +160,42 @@ const EMAIL_TOOLS = [
   },
 ];
 
+// The workload Hermes/opencode actually run: read -> edit -> verify, many steps.
+const CODING_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "read_file",
+      description: "Read a file from the repo.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" } },
+        required: ["path"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "edit_file",
+      description: "Apply a targeted edit to a file.",
+      parameters: {
+        type: "object",
+        properties: { path: { type: "string" }, change: { type: "string" } },
+        required: ["path", "change"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "run_tests",
+      description: "Run the test suite and get pass/fail counts.",
+      parameters: { type: "object", properties: { suite: { type: "string" } }, required: [] },
+    },
+  },
+];
+
 const SOURCES = [
   "https://arxiv.org/abs/2401.0001",
   "https://arxiv.org/abs/2402.0002",
@@ -179,6 +215,20 @@ const MESSAGES = [
 
 const researchStore = { notes: [] as { url: string; claim: string }[], questions: [] as string[] };
 const emailStore = { labels: [] as { id: string; label: string }[], drafts: [] as { id: string }[] };
+const codingStore = {
+  reads: [] as string[],
+  edits: [] as { path: string; change: string }[],
+  suites: 0,
+};
+
+const CODING_FILES = [
+  "src/proxy.ts",
+  "src/pricing.ts",
+  "src/session-store.ts",
+  "src/state.ts",
+  "src/cost-ledger.ts",
+  "src/sse.ts",
+];
 
 type Scenario = {
   label: string;
@@ -242,6 +292,34 @@ const SCENARIOS: Record<string, Scenario> = {
       return JSON.stringify({ error: `unknown tool ${name}` });
     },
     summary: () => `${emailStore.labels.length} labelled · ${emailStore.drafts.length} drafts`,
+  },
+  coding: {
+    label: "coding",
+    system:
+      "You are a coding agent. read_file before editing, then edit_file, then run_tests to verify. Keep changes small. After tools, continue.",
+    tools: CODING_TOOLS,
+    step: (i, n) =>
+      `Step ${i + 1}/${n}: work on ${CODING_FILES[i % CODING_FILES.length]}. Call read_file. If it needs a change, call edit_file, then call run_tests to verify.`,
+    run: (name, args) => {
+      if (name === "read_file") {
+        const p = String(args.path ?? "?");
+        codingStore.reads.push(p);
+        return JSON.stringify({ ok: true, path: p, lines: 120 + (p.length % 80) });
+      }
+      if (name === "edit_file") {
+        codingStore.edits.push({
+          path: String(args.path ?? "?"),
+          change: String(args.change ?? "").slice(0, 200),
+        });
+        return JSON.stringify({ ok: true, edits: codingStore.edits.length });
+      }
+      if (name === "run_tests") {
+        codingStore.suites += 1;
+        return JSON.stringify({ ok: true, passed: 264, failed: 0 });
+      }
+      return JSON.stringify({ error: `unknown tool ${name}` });
+    },
+    summary: () => `${codingStore.reads.length} reads · ${codingStore.edits.length} edits · ${codingStore.suites} test runs`,
   },
 };
 
@@ -323,6 +401,9 @@ async function runLoop(label: string, url: string, extra: Record<string, string>
   researchStore.questions.length = 0;
   emailStore.labels.length = 0;
   emailStore.drafts.length = 0;
+  codingStore.reads.length = 0;
+  codingStore.edits.length = 0;
+  codingStore.suites = 0;
   const history: any[] = [
     {
       role: "system",
