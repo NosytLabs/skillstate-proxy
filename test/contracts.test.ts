@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 
 // Real imports — these are the actual modules under test.
 import { CostLedger } from "../src/cost-ledger.js";
-import { gonkaCost, priceFor, costFor } from "../src/pricing.js";
+import { costFor, gonkaCost, lookupPricing, priceFor } from "../src/pricing.js";
 import { estimateTokens, extractUsage } from "../src/token-estimate.js";
 
 let tmpDir: string;
@@ -244,10 +244,10 @@ describe("priceFor — robust lookups, never throws", () => {
     expect(cUnknown).toBe(0); // unknown → zero
   });
 
-  it("gonka-prefixed model falls through to the gonka price tier", () => {
-    const p = priceFor("MiniMaxAI/MiniMax-M2.7");
-    // we don't snapshot the exact price (it tracks GNK market value),
-    // just that the lookup routed to gonka and the source mentions it
-    expect(p.source.toLowerCase()).toContain("gonka");
+  it("gonka-prefixed models stay unknown in the USD table (GNK-denominated)", () => {
+    // Deliberate: gonka bills in GNK at a protocol rate that moves per block, so
+    // baking a USD figure into MODEL_PRICING would be stale FX. Cost math lives in
+    // gonkaCost(), which takes a caller-supplied contemporaneous GNK/USD rate.
+    expect(lookupPricing("MiniMaxAI/MiniMax-M2.7").status).toBe("unknown");
   });
 });

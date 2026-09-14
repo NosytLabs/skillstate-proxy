@@ -19,7 +19,7 @@
  * Tests run with no HTTP — pure unit.
  */
 import { describe, it, expect } from "vitest";
-import { gonkaCost, priceFor, costFor } from "../src/pricing.js";
+import { gonkaCost, lookupPricing, MODEL_PRICING } from "../src/pricing.js";
 
 // Allow ±10% on the GNK price (volatile microcap) so the test isn't brittle to live CMC movement.
 const GNK_USD = 0.128;
@@ -39,31 +39,29 @@ describe("gonka cost math — verified 2026-09-13 invariants", () => {
     expect(c.usd).toBeLessThan(0.01);
   });
 
-  it("priceFor routes 'miniMaxAI/MiniMax-M2.7' to the gonka price tier", () => {
-    const p = priceFor("MiniMaxAI/MiniMax-M2.7");
-    // must be > 0 (gonka tier, not ZERO_LOCAL); < $1 per 1M (cheap)
-    expect(p.input).toBeGreaterThan(0);
-    expect(p.input).toBeLessThan(1.0);
-    // USD per 1M is ~$0.0012; if we cross 0.01 here something is very wrong
-    expect(p.input).toBeLessThan(0.01);
+  it("does not bake volatile Gonka/GNK USD conversion into MODEL_PRICING", () => {
+    // Policy: gonka's rate is GNK-denominated and FX-volatile, so the generic USD
+    // table must report unknown. Live USD comes from gonkaCost() with a
+    // caller-supplied contemporaneous GNK/USD rate.
+    for (const m of ["MiniMaxAI/MiniMax-M2.7", "MiniMax-M2.7",
+                     "deepseek-ai/DeepSeek-V4-Flash-0731", "deepseek-ai/DeepSeek-V4-Flash"]) {
+      expect(lookupPricing(m).status).toBe("unknown");
+    }
+    expect(MODEL_PRICING).not.toHaveProperty("gonka");
   });
 
-  it("priceFor routes 'deepseek-ai/DeepSeek-V4-Flash-0731' to the gonka price tier", () => {
-    // Verified live on OpenBroker 2026-09-13; pricing.ts must carry the entry now.
-    const p = priceFor("deepseek-ai/DeepSeek-V4-Flash-0731");
-    expect(p.input).toBeGreaterThan(0);
-    expect(p.input).toBeLessThan(0.01);
-    expect(p.source.toLowerCase()).toContain("gonka");
+  it("gonka cost is GNK-denominated; USD only when a live rate is supplied", () => {
+    const noRate = gonkaCost(1_000_000);
+    expect(noRate.gnk).toBeCloseTo(0.01, 6);
+    expect(noRate.usd).toBeNull();                 // no baked-in FX
+    const withRate = gonkaCost(1_000_000, GNK_USD);
+    expect(withRate.usd).toBeCloseTo(0.01 * GNK_USD, 8);
   });
 
-  it("gonka tier is ~73x cheaper than DeepSeek openrouter list rate ($0.14/1M)", () => {
-    // We can't import the upstream list price (it changes),
-    // but we can assert the relationship: gonka < 5 cents per 1M,
-    // so the ratio to a $0.14/1M upstream is at least 12x (and realistically ~28-73x).
-    const gonkaUsdPerM = costFor("MiniMaxAI/MiniMax-M2.7", 1_000_000, 0);
+  it("gonka floor rate is far cheaper than the DeepSeek openrouter list rate ($0.14/1M)", () => {
+    const gonkaUsdPerM = gonkaCost(1_000_000, GNK_USD).usd!;
     expect(gonkaUsdPerM).toBeLessThan(0.05);
-    const ratio = 0.14 / gonkaUsdPerM;
-    expect(ratio).toBeGreaterThan(2);  // at least 2x cheaper; observed ~28-73x
+    expect(0.14 / gonkaUsdPerM).toBeGreaterThan(2);
   });
 
   it("recorded account lifetime (3.24 GNK @ 166.84M tokens) implies ~19.5 nGNK/token", () => {

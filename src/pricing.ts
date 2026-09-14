@@ -53,16 +53,6 @@ export const MODEL_PRICING: Record<string, ModelPrice> = {
   "claude-opus-4-5": { input: 6, output: 30, cacheRead: 0.60, source: "Venice Claude Opus 4.5 model page", asOf: "2026-09-10" },
   "openai-gpt-56-sol": { input: 6.25, output: 37.50, cacheRead: 0.63, source: "Venice GPT-5.6 Sol model page", asOf: "2026-09-10" },
 
-  // ── Gonka (decentralized GPU network, gonka.ai) ─────────────────────
-  // 0.01 GNK per 1M tokens (flat, input+output); USD shown at ~$0.12/GNK.
-  // Developers pay per-token in GNK from their wallet; hosts earn GNK.
-  "gonka": { input: 0.0012, output: 0.0012, source: "gonka.broker — 0.01 GNK/1M @ $0.12", asOf: "2026-08-29" },
-  "MiniMaxAI/MiniMax-M2.7": { input: 0.0012, output: 0.0012, source: "gonka OpenBroker — 0.01 GNK/1M @ $0.12", asOf: "2026-09-07" },
-  "MiniMax-M2.7": { input: 0.0012, output: 0.0012, source: "gonka OpenBroker — 0.01 GNK/1M @ $0.12", asOf: "2026-09-07" },
-  // Verified 2026-09-13: same OpenBroker + same chain + same token_price=10 nGNK/tok
-  // as MiniMax-M2.7 (verified live via /v1/models and a successful POST).
-  "deepseek-ai/DeepSeek-V4-Flash-0731": { input: 0.0012, output: 0.0012, source: "gonka OpenBroker — 0.01 GNK/1M @ $0.12", asOf: "2026-09-13" },
-  "deepseek-ai/DeepSeek-V4-Flash": { input: 0.0012, output: 0.0012, source: "gonka OpenBroker — alias of 0731", asOf: "2026-09-13" },
 };
 
 function bundledPrice(model: string): ModelPrice | undefined {
