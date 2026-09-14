@@ -93,6 +93,159 @@ function runTool(name: string, raw: string): string {
   return JSON.stringify({ error: `unknown tool ${name}` });
 }
 
+// ── scenarios ────────────────────────────────────────────────────────────────
+// One harness, several long-horizon workloads. SKILLSTATE_SCENARIO selects.
+const RESEARCH_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "note_source",
+      description: "Record a claim together with the source it came from.",
+      parameters: {
+        type: "object",
+        properties: { url: { type: "string" }, claim: { type: "string" } },
+        required: ["url", "claim"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "add_open_question",
+      description: "Record a question the brief still needs answered.",
+      parameters: {
+        type: "object",
+        properties: { question: { type: "string" } },
+        required: ["question"],
+      },
+    },
+  },
+];
+
+const EMAIL_TOOLS = [
+  {
+    type: "function",
+    function: {
+      name: "label_message",
+      description: "Apply a triage label to an email.",
+      parameters: {
+        type: "object",
+        properties: {
+          id: { type: "string" },
+          label: { type: "string", enum: ["urgent", "action", "fyi", "spam", "archive"] },
+        },
+        required: ["id", "label"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "draft_reply",
+      description: "Draft a reply body for an email that needs one.",
+      parameters: {
+        type: "object",
+        properties: { id: { type: "string" }, body: { type: "string" } },
+        required: ["id", "body"],
+      },
+    },
+  },
+];
+
+const SOURCES = [
+  "https://arxiv.org/abs/2401.0001",
+  "https://arxiv.org/abs/2402.0002",
+  "https://openreview.net/forum?id=x1",
+  "https://aclanthology.org/2024.x",
+  "https://github.com/example/bench",
+  "https://blog.example.com/long-context",
+];
+const MESSAGES = [
+  "invoice-4471 from vendor@acme.example",
+  "prod outage alert from pager@example",
+  "newsletter from weekly@digest.example",
+  "contract renewal from legal@bigco.example",
+  "recruiter spam from jobs@spam.example",
+  "customer escalation from vip@client.example",
+];
+
+const researchStore = { notes: [] as { url: string; claim: string }[], questions: [] as string[] };
+const emailStore = { labels: [] as { id: string; label: string }[], drafts: [] as { id: string }[] };
+
+type Scenario = {
+  label: string;
+  system: string;
+  tools: any[];
+  step: (i: number, n: number) => string;
+  run: (name: string, args: any) => string;
+  summary: () => string;
+};
+
+const SCENARIOS: Record<string, Scenario> = {
+  security: {
+    label: "security",
+    system:
+      "You are a security-review agent. Use record_finding and mark_file. Keep notes short. After tools, continue.",
+    tools: TOOLS,
+    step: (i, n) =>
+      `Step ${i + 1}/${n}: review ${FILES[i % FILES.length]}. Call mark_file. If you see an issue, call record_finding.`,
+    run: runTool,
+    summary: () => `${store.findings.length} findings · ${store.files.size} files`,
+  },
+  research: {
+    label: "research",
+    system:
+      "You are a research analyst building a sourced brief. Use note_source for each claim and add_open_question for gaps. Keep notes short. After tools, continue.",
+    tools: RESEARCH_TOOLS,
+    step: (i, n) =>
+      `Step ${i + 1}/${n}: read ${SOURCES[i % SOURCES.length]} and call note_source with its key claim. If something is unresolved, call add_open_question.`,
+    run: (name, args) => {
+      if (name === "note_source") {
+        researchStore.notes.push({
+          url: String(args.url ?? "?"),
+          claim: String(args.claim ?? "").slice(0, 200),
+        });
+        return JSON.stringify({ ok: true, notes: researchStore.notes.length });
+      }
+      if (name === "add_open_question") {
+        researchStore.questions.push(String(args.question ?? "").slice(0, 160));
+        return JSON.stringify({ ok: true, questions: researchStore.questions.length });
+      }
+      return JSON.stringify({ error: `unknown tool ${name}` });
+    },
+    summary: () => `${researchStore.notes.length} notes · ${researchStore.questions.length} open questions`,
+  },
+  email: {
+    label: "email",
+    system:
+      "You are an inbox triage agent. Use label_message on every email, then draft_reply only when a reply is genuinely needed. Keep drafts short. After tools, continue.",
+    tools: EMAIL_TOOLS,
+    step: (i, n) =>
+      `Step ${i + 1}/${n}: triage ${MESSAGES[i % MESSAGES.length]}. Call label_message. If it needs an answer, call draft_reply.`,
+    run: (name, args) => {
+      if (name === "label_message") {
+        emailStore.labels.push({ id: String(args.id ?? "?"), label: String(args.label ?? "?") });
+        return JSON.stringify({ ok: true, labelled: emailStore.labels.length });
+      }
+      if (name === "draft_reply") {
+        emailStore.drafts.push({ id: String(args.id ?? "?") });
+        return JSON.stringify({ ok: true, drafts: emailStore.drafts.length });
+      }
+      return JSON.stringify({ error: `unknown tool ${name}` });
+    },
+    summary: () => `${emailStore.labels.length} labelled · ${emailStore.drafts.length} drafts`,
+  },
+};
+
+const SCENARIO_NAME = process.env.SKILLSTATE_SCENARIO ?? "security";
+const SCENARIO = SCENARIOS[SCENARIO_NAME];
+if (!SCENARIO) {
+  console.error(
+    `Unknown SKILLSTATE_SCENARIO '${SCENARIO_NAME}'. Use one of: ${Object.keys(SCENARIOS).join(", ")}`,
+  );
+  process.exit(2);
+}
+
 async function chat(url: string, messages: any[], extra: Record<string, string> = {}) {
   const r = await fetch(`${url}/chat/completions`, {
     method: "POST",
@@ -106,7 +259,7 @@ async function chat(url: string, messages: any[], extra: Record<string, string> 
       stream: false,
       max_tokens: 400,
       temperature: 0.2,
-      tools: TOOLS,
+      tools: SCENARIO.tools,
       tool_choice: "auto",
       messages,
     }),
@@ -127,11 +280,14 @@ function usage(j: any, label: string, step: number) {
 async function runLoop(label: string, url: string, extra: Record<string, string>, bounded: boolean) {
   store.files.clear();
   store.findings.length = 0;
+  researchStore.notes.length = 0;
+  researchStore.questions.length = 0;
+  emailStore.labels.length = 0;
+  emailStore.drafts.length = 0;
   const history: any[] = [
     {
       role: "system",
-      content:
-        "You are a security-review agent. Use record_finding and mark_file. Keep notes short. After tools, continue.",
+      content: SCENARIO.system,
     },
   ];
   let prompt = 0, comp = 0, usd = 0, toolCalls = 0, apiCalls = 0, failures = 0;
@@ -140,7 +296,7 @@ async function runLoop(label: string, url: string, extra: Record<string, string>
   for (let i = 0; i < N; i++) {
     const user = {
       role: "user",
-      content: `Step ${i + 1}/${N}: review ${FILES[i % FILES.length]}. Call mark_file. If you see an issue, call record_finding.`,
+      content: SCENARIO.step(i, N),
     };
     const msgs = bounded ? [history[0], user] : [...history, user];
     if (!bounded) history.push(user);
@@ -177,7 +333,9 @@ async function runLoop(label: string, url: string, extra: Record<string, string>
       const toolMsgs = calls.map((tc: any) => {
         toolsThis += 1;
         toolCalls += 1;
-        const out = runTool(tc.function?.name, tc.function?.arguments ?? "{}");
+        const out = SCENARIO.run(tc.function?.name, (() => {
+          try { return JSON.parse(tc.function?.arguments ?? "{}"); } catch { return {}; }
+        })());
         return { role: "tool", tool_call_id: tc.id, name: tc.function?.name, content: out };
       });
       const follow = bounded
@@ -250,7 +408,7 @@ async function main() {
 
   console.log(`${invalidBanner}
 ${"═".repeat(60)}
-  TOOL-CALL RESULTS — ${N} steps · ${MODEL}${valid ? "" : "  [INVALID]"}
+  TOOL-CALL RESULTS — ${N} steps · ${MODEL} · scenario=${SCENARIO.label}${valid ? "" : "  [INVALID]"}
 ${"═".repeat(60)}
   BASELINE:     ${base.prompt.toLocaleString()} prompt · ${base.apiCalls} upstream calls (${base.toolCalls} tool_calls) · ${base.findings} findings · ${base.failures} failed
   SKILL.state:  ${skill.prompt.toLocaleString()} prompt · ${skill.apiCalls} upstream calls (${skill.toolCalls} tool_calls) · ${skill.findings} findings · ${skill.failures} failed

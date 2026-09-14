@@ -33,6 +33,8 @@
     "test": "vitest run",
     "bench": "tsx test/benchmark.ts",
     "bench:tools": "tsx test/benchmark-tools.ts",
+    "bench:research": "SKILLSTATE_SCENARIO=research tsx test/benchmark-tools.ts",
+    "bench:email": "SKILLSTATE_SCENARIO=email tsx test/benchmark-tools.ts",
     "test:watch": "vitest"
   },
   "keywords": [
