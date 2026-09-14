@@ -21,6 +21,15 @@ const API_KEY = process.env.SKILLSTATE_API_KEY;
 const UPSTREAM = process.env.SKILLSTATE_UPSTREAM ?? "https://api.venice.ai/api/v1";
 const MODEL = process.env.SKILLSTATE_MODEL ?? "qwen3-5-9b";
 const N = Number(process.argv[2] ?? 50);
+// gonkaCost() returns usd:null unless a live GNK/USD rate is supplied. Pass one
+// via SKILLSTATE_GNK_USD to get USD figures; otherwise report GNK only rather
+// than crashing on null.
+const GNK_USD =
+  process.env.SKILLSTATE_GNK_USD !== undefined && process.env.SKILLSTATE_GNK_USD !== ""
+    ? Number(process.env.SKILLSTATE_GNK_USD)
+    : undefined;
+const usdText = (usd: number | null): string =>
+  usd === null ? "n/a (set SKILLSTATE_GNK_USD)" : `$${usd.toFixed(6)}`;
 
 if (!API_KEY) {
   console.error("Set SKILLSTATE_API_KEY to your API key.");
@@ -208,8 +217,8 @@ async function main() {
   const openaiBase = (basePrompt / 1e6) * 2.50 + (baseComp / 1e6) * 10.0;
   const openaiSS = (ssPrompt / 1e6) * 2.50 + (ssComp / 1e6) * 10.0;
 
-  const gnkBase = gonkaCost(basePrompt + baseComp);
-  const gnkSs = gonkaCost(ssPrompt + ssComp);
+  const gnkBase = gonkaCost(basePrompt + baseComp, GNK_USD);
+  const gnkSs = gonkaCost(ssPrompt + ssComp, GNK_USD);
 
   console.log(`
 ${"═".repeat(60)}
@@ -223,8 +232,8 @@ ${"═".repeat(60)}
                 $${costSaved.toFixed(6)} saved
 
   GONKA (0.01 GNK/1M @ $0.12):
-    baseline:   ${gnkBase.gnk.toFixed(6)} GNK ($${gnkBase.usd.toFixed(6)})
-    skillstate: ${gnkSs.gnk.toFixed(6)} GNK ($${gnkSs.usd.toFixed(6)})
+    baseline:   ${gnkBase.gnk.toFixed(6)} GNK (${usdText(gnkBase.usd)})
+    skillstate: ${gnkSs.gnk.toFixed(6)} GNK (${usdText(gnkSs.usd)})
 
   PROJECTED at 200 steps:
     baseline:   ~${Math.round(basePrompt * ratio200).toLocaleString()} prompt tokens

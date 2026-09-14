@@ -15,6 +15,15 @@ const API_KEY = process.env.SKILLSTATE_API_KEY;
 const UPSTREAM = process.env.SKILLSTATE_UPSTREAM ?? "https://api.venice.ai/api/v1";
 const MODEL = process.env.SKILLSTATE_MODEL ?? "qwen3-5-9b";
 const N = Number(process.argv[2] ?? 20);
+// gonkaCost() returns usd:null unless a live GNK/USD rate is supplied. Pass one
+// via SKILLSTATE_GNK_USD to get USD figures; otherwise report GNK only rather
+// than crashing on null.
+const GNK_USD =
+  process.env.SKILLSTATE_GNK_USD !== undefined && process.env.SKILLSTATE_GNK_USD !== ""
+    ? Number(process.env.SKILLSTATE_GNK_USD)
+    : undefined;
+const usdText = (usd: number | null): string =>
+  usd === null ? "n/a (set SKILLSTATE_GNK_USD)" : `$${usd.toFixed(6)}`;
 
 if (!API_KEY) {
   console.error("Set SKILLSTATE_API_KEY");
@@ -125,7 +134,7 @@ async function runLoop(label: string, url: string, extra: Record<string, string>
         "You are a security-review agent. Use record_finding and mark_file. Keep notes short. After tools, continue.",
     },
   ];
-  let prompt = 0, comp = 0, usd = 0, toolCalls = 0;
+  let prompt = 0, comp = 0, usd = 0, toolCalls = 0, apiCalls = 0;
   const steps: { step: number; prompt: number; tools: number }[] = [];
 
   for (let i = 0; i < N; i++) {
@@ -139,7 +148,7 @@ async function runLoop(label: string, url: string, extra: Record<string, string>
     try {
     let j = await chat(url, msgs, extra);
     let u = usage(j, label, i + 1);
-    prompt += u.p; comp += u.c; usd += u.usd;
+    prompt += u.p; comp += u.c; usd += u.usd; apiCalls += 1;
     let toolsThis = 0;
     let msg = j.choices?.[0]?.message ?? {};
     const calls = Array.isArray(msg.tool_calls)
@@ -176,7 +185,7 @@ async function runLoop(label: string, url: string, extra: Record<string, string>
         : [...history, msg, ...toolMsgs];
       j = await chat(url, follow, extra);
       u = usage(j, label, i + 1);
-      prompt += u.p; comp += u.c; usd += u.usd;
+      prompt += u.p; comp += u.c; usd += u.usd; apiCalls += 1;
       msg = { role: "assistant", content: j.choices?.[0]?.message?.content ?? "" };
     }
 
@@ -192,7 +201,7 @@ async function runLoop(label: string, url: string, extra: Record<string, string>
     if (i < N - 1) await new Promise((r) => setTimeout(r, 250));
   }
   console.log();
-  return { prompt, comp, usd, toolCalls, steps, files: store.files.size, findings: store.findings.length };
+  return { prompt, comp, usd, toolCalls, apiCalls, steps, files: store.files.size, findings: store.findings.length };
 }
 
 async function main() {
@@ -217,18 +226,35 @@ async function main() {
 
   const saved = base.prompt - skill.prompt;
   const pct = base.prompt > 0 ? ((saved / base.prompt) * 100).toFixed(1) : "n/a";
-  const gnk = gonkaCost(base.prompt + base.comp);
-  const gnkSs = gonkaCost(skill.prompt + skill.comp);
+  const gnk = gonkaCost(base.prompt + base.comp, GNK_USD);
+  const gnkSs = gonkaCost(skill.prompt + skill.comp, GNK_USD);
+
+  const baseAvg = base.apiCalls ? base.prompt / base.apiCalls : 0;
+  const ssAvg = skill.apiCalls ? skill.prompt / skill.apiCalls : 0;
+  const avgPct = baseAvg > 0 ? ((baseAvg - ssAvg) / baseAvg) * 100 : 0;
+  const growth = (s: typeof base) => {
+    const nz = s.steps.filter((x) => x.prompt > 0);
+    return nz.length ? nz[nz.length - 1].prompt / nz[0].prompt : 0;
+  };
+  const fair = base.apiCalls === skill.apiCalls;
 
   console.log(`
 ${"═".repeat(60)}
   TOOL-CALL RESULTS — ${N} steps · ${MODEL}
 ${"═".repeat(60)}
-  BASELINE:     ${base.prompt.toLocaleString()} prompt · ${base.toolCalls} tool_calls · ${base.findings} findings
-  SKILL.state:  ${skill.prompt.toLocaleString()} prompt · ${skill.toolCalls} tool_calls · ${skill.findings} findings
-  SAVINGS:      ${saved.toLocaleString()} prompt tokens (${pct}%)
-  GONKA est:    baseline ${gnk.gnk.toFixed(6)} GNK ($${gnk.usd.toFixed(6)})
-                skillstate ${gnkSs.gnk.toFixed(6)} GNK ($${gnkSs.usd.toFixed(6)})
+  BASELINE:     ${base.prompt.toLocaleString()} prompt · ${base.apiCalls} upstream calls (${base.toolCalls} tool_calls) · ${base.findings} findings
+  SKILL.state:  ${skill.prompt.toLocaleString()} prompt · ${skill.apiCalls} upstream calls (${skill.toolCalls} tool_calls) · ${skill.findings} findings
+  RAW SAVINGS:  ${saved.toLocaleString()} prompt tokens (${pct}%)   <-- only meaningful when call counts match
+
+  PER-CALL (the fair, workload-independent metric):
+    baseline    ${baseAvg.toFixed(0)} prompt tokens/call
+    skillstate  ${ssAvg.toFixed(0)} prompt tokens/call   (${avgPct >= 0 ? "-" : "+"}${Math.abs(avgPct).toFixed(1)}%)
+  CONTEXT GROWTH (first->last step):
+    baseline    ${growth(base).toFixed(2)}x
+    skillstate  ${growth(skill).toFixed(2)}x
+  ${fair ? "" : "NOTE: arms made different numbers of calls, so RAW SAVINGS is NOT a like-for-like\n        comparison — read PER-CALL and CONTEXT GROWTH instead.\n"}
+  GONKA est:    baseline ${gnk.gnk.toFixed(6)} GNK (${usdText(gnk.usd)})
+                skillstate ${gnkSs.gnk.toFixed(6)} GNK (${usdText(gnkSs.usd)})
 ${"═".repeat(60)}
 `);
 }
