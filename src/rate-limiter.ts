@@ -1,52 +1,73 @@
 import type { UpstreamConfig } from "./proxy.js";
 
+const WINDOW_MS = 60_000;
+type TokenWindow = { timestamps: number[]; values: number[] };
+
+/** Find the first entry still inside the half-open rolling window. */
+function firstActive(timestamps: number[], cutoff: number): number {
+  let index = 0;
+  while (index < timestamps.length && timestamps[index]! <= cutoff) index++;
+  return index;
+}
+
 export class RateLimiter {
-  private windowTokens = new Map<string, { timestamps: number[]; values: number[] }>();
+  private windowTokens = new Map<string, TokenWindow>();
   private windowReqs = new Map<string, number[]>();
 
   constructor(private config: UpstreamConfig) {}
 
-  private pruneReqs(name: string, windowMs = 60_000): void {
-    const arr = this.windowReqs.get(name);
-    if (!arr) return;
-    const cutoff = Date.now() - windowMs;
-    let i = 0;
-    while (i < arr.length && arr[i]! < cutoff) i++;
-    if (i > 0) this.windowReqs.set(name, arr.slice(i));
-  }
+  /** Prune on checks AND records; disabled counters must not retain history. */
+  private prune(name: string, now: number): void {
+    const cutoff = now - WINDOW_MS;
+    const requests = this.windowReqs.get(name);
+    if (!this.config.rpm) this.windowReqs.delete(name);
+    else if (requests) {
+      const start = firstActive(requests, cutoff);
+      if (start === requests.length) this.windowReqs.delete(name);
+      else if (start > 0) this.windowReqs.set(name, requests.slice(start));
+    }
 
-  private pruneTokens(name: string, windowMs = 60_000): void {
-    const buf = this.windowTokens.get(name);
-    if (!buf) return;
-    const cutoff = Date.now() - windowMs;
-    let i = 0;
-    while (i < buf.timestamps.length && buf.timestamps[i]! < cutoff) i++;
-    if (i > 0) {
-      this.windowTokens.set(name, {
-        timestamps: buf.timestamps.slice(i),
-        values: buf.values.slice(i),
-      });
+    const tokens = this.windowTokens.get(name);
+    if (!this.config.tpm) this.windowTokens.delete(name);
+    else if (tokens) {
+      const start = firstActive(tokens.timestamps, cutoff);
+      if (start === tokens.timestamps.length) this.windowTokens.delete(name);
+      else if (start > 0) {
+        this.windowTokens.set(name, {
+          timestamps: tokens.timestamps.slice(start),
+          values: tokens.values.slice(start),
+        });
+      }
     }
   }
 
   check(estimatedTokens: number): { ok: boolean; retryAfter?: number } {
     const name = this.config.name;
+    const now = Date.now();
+    this.prune(name, now);
+    const retryAt = (timestamp: number) => Math.max(1, Math.ceil((timestamp + WINDOW_MS - now) / 1000));
+
     if (this.config.rpm) {
-      this.pruneReqs(name);
-      const arr = this.windowReqs.get(name) ?? [];
-      if (arr.length >= this.config.rpm) {
-        return { ok: false, retryAfter: Math.ceil((arr[0]! + 60_000 - Date.now()) / 1000) };
+      const requests = this.windowReqs.get(name) ?? [];
+      if (requests.length >= this.config.rpm) {
+        return { ok: false, retryAfter: retryAt(requests[0]!) };
       }
     }
     if (this.config.tpm) {
-      this.pruneTokens(name);
-      const buf = this.windowTokens.get(name);
-      const sum = buf ? buf.values.reduce((a, b) => a + b, 0) : 0;
-      if (sum + estimatedTokens > this.config.tpm) {
-        // calculate retry-after based on when the oldest token entry expires
-        const oldest = buf?.timestamps[0];
-        const retryAfter = oldest ? Math.ceil((oldest + 60_000 - Date.now()) / 1000) : 60;
-        return { ok: false, retryAfter: Math.max(1, retryAfter) };
+      const tokens = this.windowTokens.get(name);
+      let total = tokens ? tokens.values.reduce((sum, value) => sum + value, 0) : 0;
+      if (total + estimatedTokens > this.config.tpm) {
+        // Wait until enough tokens expire, not merely the first entry. A
+        // request exceeding the entire limit retains the existing 60s fallback.
+        if (tokens && estimatedTokens <= this.config.tpm) {
+          for (let i = 0; i < tokens.values.length; i++) {
+            total -= tokens.values[i]!;
+            if (total + estimatedTokens <= this.config.tpm) {
+              return { ok: false, retryAfter: retryAt(tokens.timestamps[i]!) };
+            }
+          }
+        }
+        return { ok: false, retryAfter: 60 };
       }
     }
     return { ok: true };
@@ -55,17 +76,17 @@ export class RateLimiter {
   record(tokens: number): void {
     const name = this.config.name;
     const now = Date.now();
-    // RPM tracking
-    const reqs = this.windowReqs.get(name) ?? [];
-    reqs.push(now);
-    this.windowReqs.set(name, reqs);
-    // TPM tracking
-    let buf = this.windowTokens.get(name);
-    if (!buf) {
-      buf = { timestamps: [], values: [] };
-      this.windowTokens.set(name, buf);
+    this.prune(name, now);
+    if (this.config.rpm) {
+      const requests = this.windowReqs.get(name) ?? [];
+      requests.push(now);
+      this.windowReqs.set(name, requests);
     }
-    buf.timestamps.push(now);
-    buf.values.push(tokens);
+    if (this.config.tpm) {
+      const buffer = this.windowTokens.get(name) ?? { timestamps: [], values: [] };
+      buffer.timestamps.push(now);
+      buffer.values.push(tokens);
+      this.windowTokens.set(name, buffer);
+    }
   }
 }
