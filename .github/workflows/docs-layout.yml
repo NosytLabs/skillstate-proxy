@@ -1,14 +1,15 @@
 name: Documentation layout
 
+# Cost containment: start browser checks explicitly from Actions.
 on:
-  pull_request:
-    paths: ['docs/**', 'README.md', 'scripts/check_docs_layout.py', '.github/workflows/docs-layout.yml']
-  push:
-    branches: [main]
-    paths: ['docs/**', 'README.md', 'scripts/check_docs_layout.py', '.github/workflows/docs-layout.yml']
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: docs-layout-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   layout:
@@ -33,5 +34,5 @@ jobs:
         with:
           name: documentation-layout
           path: /tmp/skillstate-docs-layout
-          retention-days: 7
+          retention-days: 3
           if-no-files-found: ignore
