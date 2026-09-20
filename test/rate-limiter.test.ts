@@ -99,3 +99,20 @@ test("zero-token requests still count toward RPM", () => clock(() => {
 test("one request larger than TPM is rejected with bounded retry", () => clock(() => {
   assert.deepEqual(make({ tpm: 100 }).check(101), { ok: false, retryAfter: 60 });
 }));
+
+test("RPM retry accounts for more recorded completions than available slots", () => clock(time => {
+  const limiter = make({ rpm: 2 });
+  time(1000); limiter.record(1);
+  time(11000); limiter.record(1);
+  time(21000); limiter.record(1);
+  time(31000);
+  assert.deepEqual(limiter.check(1), { ok: false, retryAfter: 40 });
+}));
+
+test("combined limits wait until both request and token capacity is available", () => clock(time => {
+  const limiter = make({ rpm: 2, tpm: 100 });
+  time(1000); limiter.record(20);
+  time(11000); limiter.record(50);
+  time(21000);
+  assert.deepEqual(limiter.check(70), { ok: false, retryAfter: 50 });
+}));

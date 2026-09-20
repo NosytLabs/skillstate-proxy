@@ -47,10 +47,14 @@ export class RateLimiter {
     this.prune(name, now);
     const retryAt = (timestamp: number) => Math.max(1, Math.ceil((timestamp + WINDOW_MS - now) / 1000));
 
+    let retryAfter = 0;
     if (this.config.rpm) {
       const requests = this.windowReqs.get(name) ?? [];
       if (requests.length >= this.config.rpm) {
-        return { ok: false, retryAfter: retryAt(requests[0]!) };
+        // Completions can exceed the configured limit without a reservation
+        // system. Enough entries must expire to make room for one request.
+        const expiryIndex = requests.length - Math.ceil(this.config.rpm);
+        retryAfter = retryAt(requests[expiryIndex]!);
       }
     }
     if (this.config.tpm) {
@@ -59,18 +63,20 @@ export class RateLimiter {
       if (total + estimatedTokens > this.config.tpm) {
         // Wait until enough tokens expire, not merely the first entry. A
         // request exceeding the entire limit retains the existing 60s fallback.
+        let tokenRetry = 60;
         if (tokens && estimatedTokens <= this.config.tpm) {
           for (let i = 0; i < tokens.values.length; i++) {
             total -= tokens.values[i]!;
             if (total + estimatedTokens <= this.config.tpm) {
-              return { ok: false, retryAfter: retryAt(tokens.timestamps[i]!) };
+              tokenRetry = retryAt(tokens.timestamps[i]!);
+              break;
             }
           }
         }
-        return { ok: false, retryAfter: 60 };
+        retryAfter = Math.max(retryAfter, tokenRetry);
       }
     }
-    return { ok: true };
+    return retryAfter > 0 ? { ok: false, retryAfter } : { ok: true };
   }
 
   record(tokens: number): void {
