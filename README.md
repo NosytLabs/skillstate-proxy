@@ -75,9 +75,13 @@ State is persisted locally and can contain sensitive task information. The upstr
 | DELETE | `/state?session=ID` | Reset that session |
 | GET | `/cost` | Recorded cost summary, not a provider invoice |
 
-An implemented route is not proof that every SDK feature works. Test streaming, tool-call/result correlation, concurrent sessions, retries and cancellation against your exact client, provider and model. The source tests and open hardening pull requests document the implementation more precisely than a universal compatibility claim would.
+An implemented route is not proof that every SDK feature works. Test streaming, tool-call/result correlation, concurrent sessions, retries and cancellation against your exact client, provider and model. The source tests and [hardening review](docs/hardening-review.md) describe implementation limits rather than universal compatibility.
+
+Optional per-upstream `rpm` and `tpm` settings use a local one-minute rolling window. Histories for disabled counters are not stored; enabled histories are pruned on both checks and records. Token retry estimates account for enough recorded usage expiring. This is not a provider-side quota, distributed limiter, or reservation system for concurrent requests. An individual request above the configured token limit will not fit merely by waiting.
 
 ## Verify from source
+
+Use npm and the committed `package-lock.json` for reproducible source installs. Alternate package-manager lockfiles are not maintained; do not generate a second lockfile during routine maintenance.
 
 ```sh
 npm ci
@@ -85,7 +89,9 @@ npm run build
 npm test
 ```
 
-See [Actions](https://github.com/NosytLabs/skillstate-proxy/actions) for revision-specific results. Skipped integration tests do not verify a live provider. No fixed passing-test count is embedded in this README.
+CI checks Node.js 20, 22 and 24, including the packed command-line package. Node.js 20 is retained as a compatibility test, not a recommendation to use an unsupported runtime. See [Actions](https://github.com/NosytLabs/skillstate-proxy/actions) for revision-specific results. Skipped integration tests do not verify a live provider. No fixed passing-test count is embedded in this README.
+
+The static Pages workflow runs when `docs/` or its publishing workflow changes, or by manual dispatch. Code-only changes do not need to republish unchanged documentation.
 
 Optional static-page layout verification uses Python Playwright:
 
