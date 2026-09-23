@@ -1,0 +1,30 @@
+name: Prune stale artifacts once
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/prune-stale-artifacts-once-20260923.yml']
+permissions:
+  contents: read
+  actions: write
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Delete Actions artifacts older than 24 hours
+        shell: bash
+        run: |
+          set -euo pipefail
+          cutoff="$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+          rows="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/artifacts?per_page=100" --jq ".artifacts[] | select(.created_at < \"$cutoff\") | [.id,.size_in_bytes] | @tsv")"
+          count=0
+          bytes=0
+          while IFS=$'\t' read -r id size; do
+            test -n "$id" || continue
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$id"
+            count=$((count+1))
+            bytes=$((bytes+size))
+          done <<< "$rows"
+          echo "Deleted $count stale artifacts totaling $bytes bytes."
