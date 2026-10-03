@@ -89,9 +89,9 @@ npm run build
 npm test
 ```
 
-CI checks Node.js 20, 22 and 24, including the packed command-line package. Node.js 20 is retained as a compatibility test, not a recommendation to use an unsupported runtime. See [Actions](https://github.com/NosytLabs/skillstate-proxy/actions) for revision-specific results. Skipped integration tests do not verify a live provider. No fixed passing-test count is embedded in this README.
+The manually dispatched CI workflow checks Node.js 20, 22 and 24, including the packed command-line package. Node.js 20 is retained as a compatibility test, not a recommendation to use an unsupported runtime. See [Actions](https://github.com/NosytLabs/skillstate-proxy/actions) for revision-specific results. Skipped integration tests do not verify a live provider. No fixed passing-test count is embedded in this README.
 
-The static Pages workflow runs when `docs/` or its publishing workflow changes, or by manual dispatch. Code-only changes do not need to republish unchanged documentation.
+The static Pages and documentation-layout workflows are manually dispatched. A source change does not automatically republish the documentation.
 
 Optional static-page layout verification uses Python Playwright:
 

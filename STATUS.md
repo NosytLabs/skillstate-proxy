@@ -1,14 +1,14 @@
 # Project status
 
-Reviewed 2026-09-25. This is a real TypeScript/Node local proxy with source,
+Verified locally 2026-10-03. This is a TypeScript/Node local proxy with source,
 tests, documentation, a lockfile, and an npm package. It runs against a
 configured upstream provider; the documentation site is not a hosted API.
 
-Quick check: `npm ci && npm test`.
-
-Date refreshed during the 2026-09-25 workspace sweep — repository
-hygiene only (git state, doc/log cruft). No code review was performed,
-so the claims in this file are unverified since 2026-09-12.
+Verification: clean npm install, TypeScript build, 284 passing tests with
+12 opt-in live tests skipped, packed CLI installation and both executable
+aliases, and documentation layout at 320, 390, 768 and 1440 pixels.
+No paid upstream or live chain checks were run. CI and Pages publication
+remain manually dispatched under the current cost-containment policy.
 
 Readiness: installable open-source tool; savings and model quality depend on
 the workload and provider configuration.

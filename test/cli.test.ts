@@ -3,7 +3,6 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-const tsx = join(process.cwd(), "node_modules", ".bin", "tsx");
 const cli = join(process.cwd(), "src", "cli.ts");
 const pkg = JSON.parse(readFileSync(join(process.cwd(), "package.json"), "utf8"));
 
@@ -11,7 +10,9 @@ function run(args: string[], extraEnv: Record<string, string> = {}) {
   const env = { ...process.env } as Record<string, string | undefined>;
   for (const key of Object.keys(env)) if (key.startsWith("SKILLSTATE_")) delete env[key];
   Object.assign(env, extraEnv);
-  return spawnSync(tsx, [cli, ...args], { encoding: "utf8", env: env as NodeJS.ProcessEnv, timeout: 1500 });
+  // Use the supported Node loader directly; the tsx executable additionally
+  // creates an IPC socket, which may be unavailable in restricted environments.
+  return spawnSync(process.execPath, ["--import", "tsx", cli, ...args], { encoding: "utf8", env: env as NodeJS.ProcessEnv, timeout: 1500 });
 }
 
 describe("CLI validation", () => {
